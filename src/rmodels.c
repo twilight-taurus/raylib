@@ -4,15 +4,12 @@
 *
 *   CONFIGURATION:
 *
-*   #define SUPPORT_MODULE_RMODELS
-*       rmodels module is included in the build
-*
 *   #define SUPPORT_FILEFORMAT_OBJ
 *   #define SUPPORT_FILEFORMAT_MTL
 *   #define SUPPORT_FILEFORMAT_IQM
 *   #define SUPPORT_FILEFORMAT_GLTF
 *   #define SUPPORT_FILEFORMAT_VOX
-*   #define SUPPORT_FILEFORMAT_M3D
+*
 *       Selected desired fileformats to be supported for model data loading.
 *
 *   #define SUPPORT_MESH_GENERATION
@@ -22,7 +19,7 @@
 *
 *   LICENSE: zlib/libpng
 *
-*   Copyright (c) 2013-2022 Ramon Santamaria (@raysan5)
+*   Copyright (c) 2013-2021 Ramon Santamaria (@raysan5)
 *
 *   This software is provided "as-is", without any express or implied warranty. In no event
 *   will the authors be held liable for any damages arising from the use of this software.
@@ -47,8 +44,6 @@
 #if !defined(EXTERNAL_CONFIG_FLAGS)
     #include "config.h"     // Defines module configuration flags
 #endif
-
-#if defined(SUPPORT_MODULE_RMODELS)
 
 #include "utils.h"          // Required for: TRACELOG(), LoadFileData(), LoadFileText(), SaveFileText()
 #include "rlgl.h"           // OpenGL abstraction layer to OpenGL 1.1, 2.1, 3.3+ or ES2
@@ -85,15 +80,6 @@
 
     #define VOX_LOADER_IMPLEMENTATION
     #include "external/vox_loader.h"    // VOX file format loading (MagikaVoxel)
-#endif
-
-#if defined(SUPPORT_FILEFORMAT_M3D)
-    #define M3D_MALLOC RL_MALLOC
-    #define M3D_REALLOC RL_REALLOC
-    #define M3D_FREE RL_FREE
-
-    #define M3D_IMPLEMENTATION
-    #include "external/m3d.h"           // Model3D file format loading
 #endif
 
 #if defined(SUPPORT_MESH_GENERATION)
@@ -151,10 +137,6 @@ static Model LoadGLTF(const char *fileName);    // Load GLTF mesh data
 #if defined(SUPPORT_FILEFORMAT_VOX)
 static Model LoadVOX(const char *filename);     // Load VOX mesh data
 #endif
-#if defined(SUPPORT_FILEFORMAT_M3D)
-static Model LoadM3D(const char *filename);     // Load M3D mesh data
-static ModelAnimation *LoadModelAnimationsM3D(const char *fileName, unsigned int *animCount);    // Load M3D animation data
-#endif
 
 //----------------------------------------------------------------------------------
 // Module Functions Definition
@@ -163,6 +145,11 @@ static ModelAnimation *LoadModelAnimationsM3D(const char *fileName, unsigned int
 // Draw a line in 3D world space
 void DrawLine3D(Vector3 startPos, Vector3 endPos, Color color)
 {
+    // WARNING: Be careful with internal buffer vertex alignment
+    // when using RL_LINES or RL_TRIANGLES, data is aligned to fit
+    // lines-triangles-quads in the same indexed buffers!!!
+    rlCheckRenderBatchLimit(8);
+
     rlBegin(RL_LINES);
         rlColor4ub(color.r, color.g, color.b, color.a);
         rlVertex3f(startPos.x, startPos.y, startPos.z);
@@ -173,6 +160,8 @@ void DrawLine3D(Vector3 startPos, Vector3 endPos, Color color)
 // Draw a point in 3D space, actually a small line
 void DrawPoint3D(Vector3 position, Color color)
 {
+    rlCheckRenderBatchLimit(8);
+
     rlPushMatrix();
         rlTranslatef(position.x, position.y, position.z);
         rlBegin(RL_LINES);
@@ -186,6 +175,8 @@ void DrawPoint3D(Vector3 position, Color color)
 // Draw a circle in 3D world space
 void DrawCircle3D(Vector3 center, float radius, Vector3 rotationAxis, float rotationAngle, Color color)
 {
+    rlCheckRenderBatchLimit(2*36);
+
     rlPushMatrix();
         rlTranslatef(center.x, center.y, center.z);
         rlRotatef(rotationAngle, rotationAxis.x, rotationAxis.y, rotationAxis.z);
@@ -205,6 +196,8 @@ void DrawCircle3D(Vector3 center, float radius, Vector3 rotationAxis, float rota
 // Draw a color-filled triangle (vertex in counter-clockwise order!)
 void DrawTriangle3D(Vector3 v1, Vector3 v2, Vector3 v3, Color color)
 {
+    rlCheckRenderBatchLimit(3);
+
     rlBegin(RL_TRIANGLES);
         rlColor4ub(color.r, color.g, color.b, color.a);
         rlVertex3f(v1.x, v1.y, v1.z);
@@ -216,27 +209,30 @@ void DrawTriangle3D(Vector3 v1, Vector3 v2, Vector3 v3, Color color)
 // Draw a triangle strip defined by points
 void DrawTriangleStrip3D(Vector3 *points, int pointCount, Color color)
 {
-    if (pointCount < 3) return;
+    if (pointCount >= 3)
+    {
+        rlCheckRenderBatchLimit(3*(pointCount - 2));
 
-    rlBegin(RL_TRIANGLES);
-        rlColor4ub(color.r, color.g, color.b, color.a);
+        rlBegin(RL_TRIANGLES);
+            rlColor4ub(color.r, color.g, color.b, color.a);
 
-        for (int i = 2; i < pointCount; i++)
-        {
-            if ((i%2) == 0)
+            for (int i = 2; i < pointCount; i++)
             {
-                rlVertex3f(points[i].x, points[i].y, points[i].z);
-                rlVertex3f(points[i - 2].x, points[i - 2].y, points[i - 2].z);
-                rlVertex3f(points[i - 1].x, points[i - 1].y, points[i - 1].z);
+                if ((i%2) == 0)
+                {
+                    rlVertex3f(points[i].x, points[i].y, points[i].z);
+                    rlVertex3f(points[i - 2].x, points[i - 2].y, points[i - 2].z);
+                    rlVertex3f(points[i - 1].x, points[i - 1].y, points[i - 1].z);
+                }
+                else
+                {
+                    rlVertex3f(points[i].x, points[i].y, points[i].z);
+                    rlVertex3f(points[i - 1].x, points[i - 1].y, points[i - 1].z);
+                    rlVertex3f(points[i - 2].x, points[i - 2].y, points[i - 2].z);
+                }
             }
-            else
-            {
-                rlVertex3f(points[i].x, points[i].y, points[i].z);
-                rlVertex3f(points[i - 1].x, points[i - 1].y, points[i - 1].z);
-                rlVertex3f(points[i - 2].x, points[i - 2].y, points[i - 2].z);
-            }
-        }
-    rlEnd();
+        rlEnd();
+    }
 }
 
 // Draw cube
@@ -246,6 +242,8 @@ void DrawCube(Vector3 position, float width, float height, float length, Color c
     float x = 0.0f;
     float y = 0.0f;
     float z = 0.0f;
+
+    rlCheckRenderBatchLimit(36);
 
     rlPushMatrix();
         // NOTE: Transformation is applied in inverse order (scale -> rotate -> translate)
@@ -326,67 +324,65 @@ void DrawCubeWires(Vector3 position, float width, float height, float length, Co
     float y = 0.0f;
     float z = 0.0f;
 
+    rlCheckRenderBatchLimit(36);
+
     rlPushMatrix();
         rlTranslatef(position.x, position.y, position.z);
 
         rlBegin(RL_LINES);
             rlColor4ub(color.r, color.g, color.b, color.a);
 
-            // Front face
-            //------------------------------------------------------------------
+            // Front face -----------------------------------------------------
             // Bottom line
-            rlVertex3f(x - width/2, y - height/2, z + length/2);  // Bottom left
-            rlVertex3f(x + width/2, y - height/2, z + length/2);  // Bottom right
+            rlVertex3f(x-width/2, y-height/2, z+length/2);  // Bottom left
+            rlVertex3f(x+width/2, y-height/2, z+length/2);  // Bottom right
 
             // Left line
-            rlVertex3f(x + width/2, y - height/2, z + length/2);  // Bottom right
-            rlVertex3f(x + width/2, y + height/2, z + length/2);  // Top right
+            rlVertex3f(x+width/2, y-height/2, z+length/2);  // Bottom right
+            rlVertex3f(x+width/2, y+height/2, z+length/2);  // Top right
 
             // Top line
-            rlVertex3f(x + width/2, y + height/2, z + length/2);  // Top right
-            rlVertex3f(x - width/2, y + height/2, z + length/2);  // Top left
+            rlVertex3f(x+width/2, y+height/2, z+length/2);  // Top right
+            rlVertex3f(x-width/2, y+height/2, z+length/2);  // Top left
 
             // Right line
-            rlVertex3f(x - width/2, y + height/2, z + length/2);  // Top left
-            rlVertex3f(x - width/2, y - height/2, z + length/2);  // Bottom left
+            rlVertex3f(x-width/2, y+height/2, z+length/2);  // Top left
+            rlVertex3f(x-width/2, y-height/2, z+length/2);  // Bottom left
 
-            // Back face
-            //------------------------------------------------------------------
+            // Back face ------------------------------------------------------
             // Bottom line
-            rlVertex3f(x - width/2, y - height/2, z - length/2);  // Bottom left
-            rlVertex3f(x + width/2, y - height/2, z - length/2);  // Bottom right
+            rlVertex3f(x-width/2, y-height/2, z-length/2);  // Bottom left
+            rlVertex3f(x+width/2, y-height/2, z-length/2);  // Bottom right
 
             // Left line
-            rlVertex3f(x + width/2, y - height/2, z - length/2);  // Bottom right
-            rlVertex3f(x + width/2, y + height/2, z - length/2);  // Top right
+            rlVertex3f(x+width/2, y-height/2, z-length/2);  // Bottom right
+            rlVertex3f(x+width/2, y+height/2, z-length/2);  // Top right
 
             // Top line
-            rlVertex3f(x + width/2, y + height/2, z - length/2);  // Top right
-            rlVertex3f(x - width/2, y + height/2, z - length/2);  // Top left
+            rlVertex3f(x+width/2, y+height/2, z-length/2);  // Top right
+            rlVertex3f(x-width/2, y+height/2, z-length/2);  // Top left
 
             // Right line
-            rlVertex3f(x - width/2, y + height/2, z - length/2);  // Top left
-            rlVertex3f(x - width/2, y - height/2, z - length/2);  // Bottom left
+            rlVertex3f(x-width/2, y+height/2, z-length/2);  // Top left
+            rlVertex3f(x-width/2, y-height/2, z-length/2);  // Bottom left
 
-            // Top face
-            //------------------------------------------------------------------
+            // Top face -------------------------------------------------------
             // Left line
-            rlVertex3f(x - width/2, y + height/2, z + length/2);  // Top left front
-            rlVertex3f(x - width/2, y + height/2, z - length/2);  // Top left back
+            rlVertex3f(x-width/2, y+height/2, z+length/2);  // Top left front
+            rlVertex3f(x-width/2, y+height/2, z-length/2);  // Top left back
 
             // Right line
-            rlVertex3f(x + width/2, y + height/2, z + length/2);  // Top right front
-            rlVertex3f(x + width/2, y + height/2, z - length/2);  // Top right back
+            rlVertex3f(x+width/2, y+height/2, z+length/2);  // Top right front
+            rlVertex3f(x+width/2, y+height/2, z-length/2);  // Top right back
 
-            // Bottom face
-            //------------------------------------------------------------------
+            // Bottom face  ---------------------------------------------------
             // Left line
-            rlVertex3f(x - width/2, y - height/2, z + length/2);  // Top left front
-            rlVertex3f(x - width/2, y - height/2, z - length/2);  // Top left back
+            rlVertex3f(x-width/2, y-height/2, z+length/2);  // Top left front
+            rlVertex3f(x-width/2, y-height/2, z-length/2);  // Top left back
 
             // Right line
-            rlVertex3f(x + width/2, y - height/2, z + length/2);  // Top right front
-            rlVertex3f(x + width/2, y - height/2, z - length/2);  // Top right back
+            rlVertex3f(x+width/2, y-height/2, z+length/2);  // Top right front
+            rlVertex3f(x+width/2, y-height/2, z-length/2);  // Top right back
         rlEnd();
     rlPopMatrix();
 }
@@ -405,6 +401,8 @@ void DrawCubeTexture(Texture2D texture, Vector3 position, float width, float hei
     float y = position.y;
     float z = position.z;
 
+    rlCheckRenderBatchLimit(36);
+
     rlSetTexture(texture.id);
 
     //rlPushMatrix();
@@ -416,37 +414,37 @@ void DrawCubeTexture(Texture2D texture, Vector3 position, float width, float hei
         rlBegin(RL_QUADS);
             rlColor4ub(color.r, color.g, color.b, color.a);
             // Front Face
-            rlNormal3f(0.0f, 0.0f, 1.0f);       // Normal Pointing Towards Viewer
+            rlNormal3f(0.0f, 0.0f, 1.0f);                  // Normal Pointing Towards Viewer
             rlTexCoord2f(0.0f, 0.0f); rlVertex3f(x - width/2, y - height/2, z + length/2);  // Bottom Left Of The Texture and Quad
             rlTexCoord2f(1.0f, 0.0f); rlVertex3f(x + width/2, y - height/2, z + length/2);  // Bottom Right Of The Texture and Quad
             rlTexCoord2f(1.0f, 1.0f); rlVertex3f(x + width/2, y + height/2, z + length/2);  // Top Right Of The Texture and Quad
             rlTexCoord2f(0.0f, 1.0f); rlVertex3f(x - width/2, y + height/2, z + length/2);  // Top Left Of The Texture and Quad
             // Back Face
-            rlNormal3f(0.0f, 0.0f, - 1.0f);     // Normal Pointing Away From Viewer
+            rlNormal3f(0.0f, 0.0f, - 1.0f);                  // Normal Pointing Away From Viewer
             rlTexCoord2f(1.0f, 0.0f); rlVertex3f(x - width/2, y - height/2, z - length/2);  // Bottom Right Of The Texture and Quad
             rlTexCoord2f(1.0f, 1.0f); rlVertex3f(x - width/2, y + height/2, z - length/2);  // Top Right Of The Texture and Quad
             rlTexCoord2f(0.0f, 1.0f); rlVertex3f(x + width/2, y + height/2, z - length/2);  // Top Left Of The Texture and Quad
             rlTexCoord2f(0.0f, 0.0f); rlVertex3f(x + width/2, y - height/2, z - length/2);  // Bottom Left Of The Texture and Quad
             // Top Face
-            rlNormal3f(0.0f, 1.0f, 0.0f);       // Normal Pointing Up
+            rlNormal3f(0.0f, 1.0f, 0.0f);                  // Normal Pointing Up
             rlTexCoord2f(0.0f, 1.0f); rlVertex3f(x - width/2, y + height/2, z - length/2);  // Top Left Of The Texture and Quad
             rlTexCoord2f(0.0f, 0.0f); rlVertex3f(x - width/2, y + height/2, z + length/2);  // Bottom Left Of The Texture and Quad
             rlTexCoord2f(1.0f, 0.0f); rlVertex3f(x + width/2, y + height/2, z + length/2);  // Bottom Right Of The Texture and Quad
             rlTexCoord2f(1.0f, 1.0f); rlVertex3f(x + width/2, y + height/2, z - length/2);  // Top Right Of The Texture and Quad
             // Bottom Face
-            rlNormal3f(0.0f, - 1.0f, 0.0f);     // Normal Pointing Down
+            rlNormal3f(0.0f, - 1.0f, 0.0f);                  // Normal Pointing Down
             rlTexCoord2f(1.0f, 1.0f); rlVertex3f(x - width/2, y - height/2, z - length/2);  // Top Right Of The Texture and Quad
             rlTexCoord2f(0.0f, 1.0f); rlVertex3f(x + width/2, y - height/2, z - length/2);  // Top Left Of The Texture and Quad
             rlTexCoord2f(0.0f, 0.0f); rlVertex3f(x + width/2, y - height/2, z + length/2);  // Bottom Left Of The Texture and Quad
             rlTexCoord2f(1.0f, 0.0f); rlVertex3f(x - width/2, y - height/2, z + length/2);  // Bottom Right Of The Texture and Quad
             // Right face
-            rlNormal3f(1.0f, 0.0f, 0.0f);       // Normal Pointing Right
+            rlNormal3f(1.0f, 0.0f, 0.0f);                  // Normal Pointing Right
             rlTexCoord2f(1.0f, 0.0f); rlVertex3f(x + width/2, y - height/2, z - length/2);  // Bottom Right Of The Texture and Quad
             rlTexCoord2f(1.0f, 1.0f); rlVertex3f(x + width/2, y + height/2, z - length/2);  // Top Right Of The Texture and Quad
             rlTexCoord2f(0.0f, 1.0f); rlVertex3f(x + width/2, y + height/2, z + length/2);  // Top Left Of The Texture and Quad
             rlTexCoord2f(0.0f, 0.0f); rlVertex3f(x + width/2, y - height/2, z + length/2);  // Bottom Left Of The Texture and Quad
             // Left Face
-            rlNormal3f( - 1.0f, 0.0f, 0.0f);    // Normal Pointing Left
+            rlNormal3f( - 1.0f, 0.0f, 0.0f);                  // Normal Pointing Left
             rlTexCoord2f(0.0f, 0.0f); rlVertex3f(x - width/2, y - height/2, z - length/2);  // Bottom Left Of The Texture and Quad
             rlTexCoord2f(1.0f, 0.0f); rlVertex3f(x - width/2, y - height/2, z + length/2);  // Bottom Right Of The Texture and Quad
             rlTexCoord2f(1.0f, 1.0f); rlVertex3f(x - width/2, y + height/2, z + length/2);  // Top Right Of The Texture and Quad
@@ -465,6 +463,8 @@ void DrawCubeTextureRec(Texture2D texture, Rectangle source, Vector3 position, f
     float z = position.z;
     float texWidth = (float)texture.width;
     float texHeight = (float)texture.height;
+
+    rlCheckRenderBatchLimit(36);
 
     rlSetTexture(texture.id);
 
@@ -551,6 +551,9 @@ void DrawSphere(Vector3 centerPos, float radius, Color color)
 // Draw sphere with extended parameters
 void DrawSphereEx(Vector3 centerPos, float radius, int rings, int slices, Color color)
 {
+    int numVertex = (rings + 2)*slices*6;
+    rlCheckRenderBatchLimit(numVertex);
+
     rlPushMatrix();
         // NOTE: Transformation is applied in inverse order (scale -> translate)
         rlTranslatef(centerPos.x, centerPos.y, centerPos.z);
@@ -591,6 +594,9 @@ void DrawSphereEx(Vector3 centerPos, float radius, int rings, int slices, Color 
 // Draw sphere wires
 void DrawSphereWires(Vector3 centerPos, float radius, int rings, int slices, Color color)
 {
+    int numVertex = (rings + 2)*slices*6;
+    rlCheckRenderBatchLimit(numVertex);
+
     rlPushMatrix();
         // NOTE: Transformation is applied in inverse order (scale -> translate)
         rlTranslatef(centerPos.x, centerPos.y, centerPos.z);
@@ -634,6 +640,9 @@ void DrawSphereWires(Vector3 centerPos, float radius, int rings, int slices, Col
 void DrawCylinder(Vector3 position, float radiusTop, float radiusBottom, float height, int sides, Color color)
 {
     if (sides < 3) sides = 3;
+
+    int numVertex = sides*6;
+    rlCheckRenderBatchLimit(numVertex);
 
     rlPushMatrix();
         rlTranslatef(position.x, position.y, position.z);
@@ -691,6 +700,9 @@ void DrawCylinderEx(Vector3 startPos, Vector3 endPos, float startRadius, float e
 {
     if (sides < 3) sides = 3;
 
+    int numVertex = sides*6;
+    rlCheckRenderBatchLimit(numVertex);
+
     Vector3 direction = { endPos.x - startPos.x, endPos.y - startPos.y, endPos.z - startPos.z };
     if ((direction.x == 0) && (direction.y == 0) && (direction.z == 0)) return;
 
@@ -747,6 +759,9 @@ void DrawCylinderWires(Vector3 position, float radiusTop, float radiusBottom, fl
 {
     if (sides < 3) sides = 3;
 
+    int numVertex = sides*8;
+    rlCheckRenderBatchLimit(numVertex);
+
     rlPushMatrix();
         rlTranslatef(position.x, position.y, position.z);
 
@@ -777,6 +792,9 @@ void DrawCylinderWires(Vector3 position, float radiusTop, float radiusBottom, fl
 void DrawCylinderWiresEx(Vector3 startPos, Vector3 endPos, float startRadius, float endRadius, int sides, Color color)
 {
     if (sides < 3) sides = 3;
+
+    int numVertex = sides*6;
+    rlCheckRenderBatchLimit(numVertex);
 
     Vector3 direction = { endPos.x - startPos.x, endPos.y - startPos.y, endPos.z - startPos.z };
     if ((direction.x == 0) && (direction.y == 0) && (direction.z == 0))return;
@@ -817,287 +835,12 @@ void DrawCylinderWiresEx(Vector3 startPos, Vector3 endPos, float startRadius, fl
     rlEnd();
 }
 
-// Draw a capsule with the center of its sphere caps at startPos and endPos
-void DrawCapsule(Vector3 startPos, Vector3 endPos, float radius, int slices, int rings, Color color)
-{
-    if (slices < 3) slices = 3;
-
-    Vector3 direction = { endPos.x - startPos.x, endPos.y - startPos.y, endPos.z - startPos.z };
-    
-    // draw a sphere if start and end points are the same
-    bool sphereCase = (direction.x == 0) && (direction.y == 0) && (direction.z == 0);
-    if (sphereCase) direction = (Vector3){0.0f, 1.0f, 0.0f};
-
-    // Construct a basis of the base and the caps:
-    Vector3 b0 = Vector3Normalize(direction);
-    Vector3 b1 = Vector3Normalize(Vector3Perpendicular(direction));
-    Vector3 b2 = Vector3Normalize(Vector3CrossProduct(b1, direction));
-    Vector3 capCenter = endPos;
-
-    float baseSliceAngle = (2.0f*PI)/slices;
-    float baseRingAngle  = PI * 0.5 / rings; 
-
-    rlBegin(RL_TRIANGLES);
-        rlColor4ub(color.r, color.g, color.b, color.a);
-
-        // render both caps
-        for (int c = 0; c < 2; c++)
-        {
-            for (int i = 0; i < rings; i++)
-            {
-                for (int j = 0; j < slices; j++) 
-                {
-
-                    // we build up the rings from capCenter in the direction of the 'direction' vector we computed earlier
-
-                    // as we iterate through the rings they must be placed higher above the center, the height we need is sin(angle(i))
-                    // as we iterate through the rings they must get smaller by the cos(angle(i))
-
-                    // compute the four vertices
-                    float ringSin1 = sinf(baseSliceAngle*(j + 0))*cosf(baseRingAngle * ( i + 0 ));
-                    float ringCos1 = cosf(baseSliceAngle*(j + 0))*cosf(baseRingAngle * ( i + 0 ));
-                    Vector3 w1 = (Vector3){ 
-                        capCenter.x + (sinf(baseRingAngle * ( i + 0 ))*b0.x + ringSin1*b1.x + ringCos1*b2.x) * radius,
-                        capCenter.y + (sinf(baseRingAngle * ( i + 0 ))*b0.y + ringSin1*b1.y + ringCos1*b2.y) * radius, 
-                        capCenter.z + (sinf(baseRingAngle * ( i + 0 ))*b0.z + ringSin1*b1.z + ringCos1*b2.z) * radius
-                    };
-                    float ringSin2 = sinf(baseSliceAngle*(j + 1))*cosf(baseRingAngle * ( i + 0 ));
-                    float ringCos2 = cosf(baseSliceAngle*(j + 1))*cosf(baseRingAngle * ( i + 0 ));
-                    Vector3 w2 = (Vector3){ 
-                        capCenter.x + (sinf(baseRingAngle * ( i + 0 ))*b0.x + ringSin2*b1.x + ringCos2*b2.x) * radius, 
-                        capCenter.y + (sinf(baseRingAngle * ( i + 0 ))*b0.y + ringSin2*b1.y + ringCos2*b2.y) * radius, 
-                        capCenter.z + (sinf(baseRingAngle * ( i + 0 ))*b0.z + ringSin2*b1.z + ringCos2*b2.z) * radius 
-                    };
-
-                    float ringSin3 = sinf(baseSliceAngle*(j + 0))*cosf(baseRingAngle * ( i + 1 ));
-                    float ringCos3 = cosf(baseSliceAngle*(j + 0))*cosf(baseRingAngle * ( i + 1 ));
-                    Vector3 w3 = (Vector3){ 
-                        capCenter.x + (sinf(baseRingAngle * ( i + 1 ))*b0.x + ringSin3*b1.x + ringCos3*b2.x) * radius, 
-                        capCenter.y + (sinf(baseRingAngle * ( i + 1 ))*b0.y + ringSin3*b1.y + ringCos3*b2.y) * radius, 
-                        capCenter.z + (sinf(baseRingAngle * ( i + 1 ))*b0.z + ringSin3*b1.z + ringCos3*b2.z) * radius 
-                    };
-                    float ringSin4 = sinf(baseSliceAngle*(j + 1))*cosf(baseRingAngle * ( i + 1 ));
-                    float ringCos4 = cosf(baseSliceAngle*(j + 1))*cosf(baseRingAngle * ( i + 1 ));
-                    Vector3 w4 = (Vector3){ 
-                        capCenter.x + (sinf(baseRingAngle * ( i + 1 ))*b0.x + ringSin4*b1.x + ringCos4*b2.x) * radius, 
-                        capCenter.y + (sinf(baseRingAngle * ( i + 1 ))*b0.y + ringSin4*b1.y + ringCos4*b2.y) * radius, 
-                        capCenter.z + (sinf(baseRingAngle * ( i + 1 ))*b0.z + ringSin4*b1.z + ringCos4*b2.z) * radius 
-                    };
-
-                    // make sure cap triangle normals are facing outwards
-                    if(c == 0)
-                    {
-                        rlVertex3f(w1.x, w1.y, w1.z);
-                        rlVertex3f(w2.x, w2.y, w2.z);
-                        rlVertex3f(w3.x, w3.y, w3.z);
-                        
-                        rlVertex3f(w2.x, w2.y, w2.z);   
-                        rlVertex3f(w4.x, w4.y, w4.z);  
-                        rlVertex3f(w3.x, w3.y, w3.z); 
-                    }
-                    else
-                    {
-                        rlVertex3f(w1.x, w1.y, w1.z);
-                        rlVertex3f(w3.x, w3.y, w3.z);
-                        rlVertex3f(w2.x, w2.y, w2.z);
-
-                        rlVertex3f(w2.x, w2.y, w2.z);  
-                        rlVertex3f(w3.x, w3.y, w3.z);  
-                        rlVertex3f(w4.x, w4.y, w4.z);     
-                    }
-                }
-            }
-            capCenter = startPos;
-            b0 = Vector3Scale(b0, -1.0f);
-        }
-        // render middle
-        if (!sphereCase)
-        {
-            for (int j = 0; j < slices; j++) 
-            {
-                // compute the four vertices
-                float ringSin1 = sinf(baseSliceAngle*(j + 0))*radius;
-                float ringCos1 = cosf(baseSliceAngle*(j + 0))*radius;
-                Vector3 w1 = { 
-                    startPos.x + ringSin1*b1.x + ringCos1*b2.x,
-                    startPos.y + ringSin1*b1.y + ringCos1*b2.y, 
-                    startPos.z + ringSin1*b1.z + ringCos1*b2.z 
-                };
-                float ringSin2 = sinf(baseSliceAngle*(j + 1))*radius;
-                float ringCos2 = cosf(baseSliceAngle*(j + 1))*radius;
-                Vector3 w2 = { 
-                    startPos.x + ringSin2*b1.x + ringCos2*b2.x, 
-                    startPos.y + ringSin2*b1.y + ringCos2*b2.y, 
-                    startPos.z + ringSin2*b1.z + ringCos2*b2.z 
-                };
-
-                float ringSin3 = sinf(baseSliceAngle*(j + 0))*radius;
-                float ringCos3 = cosf(baseSliceAngle*(j + 0))*radius;
-                Vector3 w3 = { 
-                    endPos.x + ringSin3*b1.x + ringCos3*b2.x, 
-                    endPos.y + ringSin3*b1.y + ringCos3*b2.y, 
-                    endPos.z + ringSin3*b1.z + ringCos3*b2.z 
-                };
-                float ringSin4 = sinf(baseSliceAngle*(j + 1))*radius;
-                float ringCos4 = cosf(baseSliceAngle*(j + 1))*radius;
-                Vector3 w4 = { 
-                    endPos.x + ringSin4*b1.x + ringCos4*b2.x, 
-                    endPos.y + ringSin4*b1.y + ringCos4*b2.y, 
-                    endPos.z + ringSin4*b1.z + ringCos4*b2.z 
-                };
-                                                                        //          w2 x.-----------x startPos
-                rlVertex3f(w1.x, w1.y, w1.z);                         // |           |\'.  T0    /
-                rlVertex3f(w2.x, w2.y, w2.z);                         // T1          | \ '.     /
-                rlVertex3f(w3.x, w3.y, w3.z);                         // |           |T \  '.  /
-                                                                        //             | 2 \ T 'x w1
-                rlVertex3f(w2.x, w2.y, w2.z);                         // |        w4 x.---\-1-|---x endPos
-                rlVertex3f(w4.x, w4.y, w4.z);                         // T2            '.  \  |T3/
-                rlVertex3f(w3.x, w3.y, w3.z);                         // |               '. \ | /
-                                                                        //                   '.\|/
-                                                                        //                   'x w3
-            }
-        }
-    rlEnd();
-}
-
-// Draw capsule wires with the center of its sphere caps at startPos and endPos
-void DrawCapsuleWires(Vector3 startPos, Vector3 endPos, float radius, int slices, int rings, Color color)
-{
-    if (slices < 3) slices = 3;
-
-    Vector3 direction = { endPos.x - startPos.x, endPos.y - startPos.y, endPos.z - startPos.z };
-
-    // draw a sphere if start and end points are the same
-    bool sphereCase = (direction.x == 0) && (direction.y == 0) && (direction.z == 0);
-    if (sphereCase) direction = (Vector3){0.0f, 1.0f, 0.0f};
-
-    // Construct a basis of the base and the caps:
-    Vector3 b0 = Vector3Normalize(direction);
-    Vector3 b1 = Vector3Normalize(Vector3Perpendicular(direction));
-    Vector3 b2 = Vector3Normalize(Vector3CrossProduct(b1, direction));
-    Vector3 capCenter = endPos;
-
-    float baseSliceAngle = (2.0f*PI)/slices;
-    float baseRingAngle  = PI * 0.5 / rings; 
-
-    rlBegin(RL_LINES);
-        rlColor4ub(color.r, color.g, color.b, color.a);
-
-        // render both caps
-        for (int c = 0; c < 2; c++)
-        {
-            for (int i = 0; i < rings; i++)
-            {
-                for (int j = 0; j < slices; j++) 
-                {
-
-                    // we build up the rings from capCenter in the direction of the 'direction' vector we computed earlier
-
-                    // as we iterate through the rings they must be placed higher above the center, the height we need is sin(angle(i))
-                    // as we iterate through the rings they must get smaller by the cos(angle(i))
-
-                    // compute the four vertices
-                    float ringSin1 = sinf(baseSliceAngle*(j + 0))*cosf(baseRingAngle * ( i + 0 ));
-                    float ringCos1 = cosf(baseSliceAngle*(j + 0))*cosf(baseRingAngle * ( i + 0 ));
-                    Vector3 w1 = (Vector3){ 
-                        capCenter.x + (sinf(baseRingAngle * ( i + 0 ))*b0.x + ringSin1*b1.x + ringCos1*b2.x) * radius,
-                        capCenter.y + (sinf(baseRingAngle * ( i + 0 ))*b0.y + ringSin1*b1.y + ringCos1*b2.y) * radius, 
-                        capCenter.z + (sinf(baseRingAngle * ( i + 0 ))*b0.z + ringSin1*b1.z + ringCos1*b2.z) * radius
-                    };
-                    float ringSin2 = sinf(baseSliceAngle*(j + 1))*cosf(baseRingAngle * ( i + 0 ));
-                    float ringCos2 = cosf(baseSliceAngle*(j + 1))*cosf(baseRingAngle * ( i + 0 ));
-                    Vector3 w2 = (Vector3){ 
-                        capCenter.x + (sinf(baseRingAngle * ( i + 0 ))*b0.x + ringSin2*b1.x + ringCos2*b2.x) * radius, 
-                        capCenter.y + (sinf(baseRingAngle * ( i + 0 ))*b0.y + ringSin2*b1.y + ringCos2*b2.y) * radius, 
-                        capCenter.z + (sinf(baseRingAngle * ( i + 0 ))*b0.z + ringSin2*b1.z + ringCos2*b2.z) * radius 
-                    };
-
-                    float ringSin3 = sinf(baseSliceAngle*(j + 0))*cosf(baseRingAngle * ( i + 1 ));
-                    float ringCos3 = cosf(baseSliceAngle*(j + 0))*cosf(baseRingAngle * ( i + 1 ));
-                    Vector3 w3 = (Vector3){ 
-                        capCenter.x + (sinf(baseRingAngle * ( i + 1 ))*b0.x + ringSin3*b1.x + ringCos3*b2.x) * radius, 
-                        capCenter.y + (sinf(baseRingAngle * ( i + 1 ))*b0.y + ringSin3*b1.y + ringCos3*b2.y) * radius, 
-                        capCenter.z + (sinf(baseRingAngle * ( i + 1 ))*b0.z + ringSin3*b1.z + ringCos3*b2.z) * radius 
-                    };
-                    float ringSin4 = sinf(baseSliceAngle*(j + 1))*cosf(baseRingAngle * ( i + 1 ));
-                    float ringCos4 = cosf(baseSliceAngle*(j + 1))*cosf(baseRingAngle * ( i + 1 ));
-                    Vector3 w4 = (Vector3){ 
-                        capCenter.x + (sinf(baseRingAngle * ( i + 1 ))*b0.x + ringSin4*b1.x + ringCos4*b2.x) * radius, 
-                        capCenter.y + (sinf(baseRingAngle * ( i + 1 ))*b0.y + ringSin4*b1.y + ringCos4*b2.y) * radius, 
-                        capCenter.z + (sinf(baseRingAngle * ( i + 1 ))*b0.z + ringSin4*b1.z + ringCos4*b2.z) * radius 
-                    };
-
-                    rlVertex3f(w1.x, w1.y, w1.z);
-                    rlVertex3f(w2.x, w2.y, w2.z);
-
-                    rlVertex3f(w2.x, w2.y, w2.z);
-                    rlVertex3f(w3.x, w3.y, w3.z);
-
-                    rlVertex3f(w1.x, w1.y, w1.z);
-                    rlVertex3f(w3.x, w3.y, w3.z);
-                    
-                    rlVertex3f(w2.x, w2.y, w2.z);   
-                    rlVertex3f(w4.x, w4.y, w4.z); 
-
-                    rlVertex3f(w3.x, w3.y, w3.z);
-                    rlVertex3f(w4.x, w4.y, w4.z); 
-                }
-            }
-            capCenter = startPos;
-            b0 = Vector3Scale(b0, -1.0f);
-        }
-        // render middle
-        if (!sphereCase)
-        {
-            for (int j = 0; j < slices; j++) 
-            {
-                // compute the four vertices
-                float ringSin1 = sinf(baseSliceAngle*(j + 0))*radius;
-                float ringCos1 = cosf(baseSliceAngle*(j + 0))*radius;
-                Vector3 w1 = { 
-                    startPos.x + ringSin1*b1.x + ringCos1*b2.x,
-                    startPos.y + ringSin1*b1.y + ringCos1*b2.y, 
-                    startPos.z + ringSin1*b1.z + ringCos1*b2.z 
-                };
-                float ringSin2 = sinf(baseSliceAngle*(j + 1))*radius;
-                float ringCos2 = cosf(baseSliceAngle*(j + 1))*radius;
-                Vector3 w2 = { 
-                    startPos.x + ringSin2*b1.x + ringCos2*b2.x, 
-                    startPos.y + ringSin2*b1.y + ringCos2*b2.y, 
-                    startPos.z + ringSin2*b1.z + ringCos2*b2.z 
-                };
-
-                float ringSin3 = sinf(baseSliceAngle*(j + 0))*radius;
-                float ringCos3 = cosf(baseSliceAngle*(j + 0))*radius;
-                Vector3 w3 = { 
-                    endPos.x + ringSin3*b1.x + ringCos3*b2.x, 
-                    endPos.y + ringSin3*b1.y + ringCos3*b2.y, 
-                    endPos.z + ringSin3*b1.z + ringCos3*b2.z 
-                };
-                float ringSin4 = sinf(baseSliceAngle*(j + 1))*radius;
-                float ringCos4 = cosf(baseSliceAngle*(j + 1))*radius;
-                Vector3 w4 = { 
-                    endPos.x + ringSin4*b1.x + ringCos4*b2.x, 
-                    endPos.y + ringSin4*b1.y + ringCos4*b2.y, 
-                    endPos.z + ringSin4*b1.z + ringCos4*b2.z 
-                };
-
-                rlVertex3f(w1.x, w1.y, w1.z); 
-                rlVertex3f(w3.x, w3.y, w3.z);
-
-                rlVertex3f(w2.x, w2.y, w2.z); 
-                rlVertex3f(w4.x, w4.y, w4.z); 
-
-                rlVertex3f(w2.x, w2.y, w2.z); 
-                rlVertex3f(w3.x, w3.y, w3.z);
-            }
-        }
-    rlEnd();
-}
 
 // Draw a plane
 void DrawPlane(Vector3 centerPos, Vector2 size, Color color)
 {
+    rlCheckRenderBatchLimit(4);
+
     // NOTE: Plane is always created on XZ ground
     rlPushMatrix();
         rlTranslatef(centerPos.x, centerPos.y, centerPos.z);
@@ -1133,6 +876,8 @@ void DrawRay(Ray ray, Color color)
 void DrawGrid(int slices, float spacing)
 {
     int halfSlices = slices/2;
+
+    rlCheckRenderBatchLimit((slices + 2)*4);
 
     rlBegin(RL_LINES);
         for (int i = -halfSlices; i <= halfSlices; i++)
@@ -1173,13 +918,10 @@ Model LoadModel(const char *fileName)
     if (IsFileExtension(fileName, ".iqm")) model = LoadIQM(fileName);
 #endif
 #if defined(SUPPORT_FILEFORMAT_GLTF)
-    if (IsFileExtension(fileName, ".gltf") || IsFileExtension(fileName, ".glb")) model = LoadGLTF(fileName);
+    if (IsFileExtension(fileName, ".gltf;.glb")) model = LoadGLTF(fileName);
 #endif
 #if defined(SUPPORT_FILEFORMAT_VOX)
     if (IsFileExtension(fileName, ".vox")) model = LoadVOX(fileName);
-#endif
-#if defined(SUPPORT_FILEFORMAT_M3D)
-    if (IsFileExtension(fileName, ".m3d")) model = LoadM3D(fileName);
 #endif
 
     // Make sure model transform is set to identity matrix!
@@ -1341,7 +1083,7 @@ void UploadMesh(Mesh *mesh, bool dynamic)
     mesh->vaoId = rlLoadVertexArray();
     rlEnableVertexArray(mesh->vaoId);
 
-    // NOTE: Vertex attributes must be uploaded considering default locations points and available vertex data
+    // NOTE: Attributes must be uploaded considering default locations points
 
     // Enable vertex attributes: position (shader-location = 0)
     void *vertices = mesh->animVertices != NULL ? mesh->animVertices : mesh->vertices;
@@ -1354,9 +1096,6 @@ void UploadMesh(Mesh *mesh, bool dynamic)
     rlSetVertexAttribute(1, 2, RL_FLOAT, 0, 0, 0);
     rlEnableVertexAttribute(1);
 
-    // WARNING: When setting default vertex attribute values, the values for each generic vertex attribute
-    // is part of current state and it is maintained even if a different program object is used
-
     if (mesh->normals != NULL)
     {
         // Enable vertex attributes: normals (shader-location = 2)
@@ -1367,8 +1106,7 @@ void UploadMesh(Mesh *mesh, bool dynamic)
     }
     else
     {
-        // Default vertex attribute: normal
-        // WARNING: Default value provided to shader if location available
+        // Default color vertex attribute set to WHITE
         float value[3] = { 1.0f, 1.0f, 1.0f };
         rlSetVertexAttributeDefault(2, value, SHADER_ATTRIB_VEC3, 3);
         rlDisableVertexAttribute(2);
@@ -1383,9 +1121,8 @@ void UploadMesh(Mesh *mesh, bool dynamic)
     }
     else
     {
-        // Default vertex attribute: color
-        // WARNING: Default value provided to shader if location available
-        float value[4] = { 1.0f, 1.0f, 1.0f, 1.0f };    // WHITE
+        // Default color vertex attribute set to WHITE
+        float value[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
         rlSetVertexAttributeDefault(3, value, SHADER_ATTRIB_VEC4, 4);
         rlDisableVertexAttribute(3);
     }
@@ -1399,8 +1136,7 @@ void UploadMesh(Mesh *mesh, bool dynamic)
     }
     else
     {
-        // Default vertex attribute: tangent
-        // WARNING: Default value provided to shader if location available
+        // Default tangents vertex attribute
         float value[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
         rlSetVertexAttributeDefault(4, value, SHADER_ATTRIB_VEC4, 4);
         rlDisableVertexAttribute(4);
@@ -1415,8 +1151,7 @@ void UploadMesh(Mesh *mesh, bool dynamic)
     }
     else
     {
-        // Default vertex attribute: texcoord2
-        // WARNING: Default value provided to shader if location available
+        // Default texcoord2 vertex attribute
         float value[2] = { 0.0f, 0.0f };
         rlSetVertexAttributeDefault(5, value, SHADER_ATTRIB_VEC2, 2);
         rlDisableVertexAttribute(5);
@@ -1424,7 +1159,8 @@ void UploadMesh(Mesh *mesh, bool dynamic)
 
     if (mesh->indices != NULL)
     {
-        mesh->vboId[6] = rlLoadVertexBufferElement(mesh->indices, mesh->triangleCount*3*sizeof(unsigned short), dynamic);
+        //TRACELOG(LOG_INFO, "MODEL: INDICES: Indices exist. loading vertex buffer element.");
+        mesh->vboId[6] = rlLoadVertexBufferElement(mesh->indices, mesh->triangleCount*3*sizeof(unsigned int), dynamic);
     }
 
     if (mesh->vaoId > 0) TRACELOG(LOG_INFO, "VAO: [ID %i] Mesh uploaded successfully to VRAM (GPU)", mesh->vaoId);
@@ -1435,7 +1171,7 @@ void UploadMesh(Mesh *mesh, bool dynamic)
 }
 
 // Update mesh vertex data in GPU for a specific buffer index
-void UpdateMeshBuffer(Mesh mesh, int index, const void *data, int dataSize, int offset)
+void UpdateMeshBuffer(Mesh mesh, int index, void *data, int dataSize, int offset)
 {
     rlUpdateVertexBuffer(mesh.vboId[index], data, dataSize, offset);
 }
@@ -1554,10 +1290,8 @@ void DrawMesh(Mesh mesh, Material material, Matrix transform)
         }
     }
 
-    // Try binding vertex array objects (VAO) or use VBOs if not possible
-    // WARNING: UploadMesh() enables all vertex attributes available in mesh and sets default attribute values
-    // for shader expected vertex attributes that are not provided by the mesh (i.e. colors)
-    // This could be a dangerous approach because different meshes with different shaders can enable/disable some attributes
+    // Try binding vertex array objects (VAO)
+    // or use VBOs if not possible
     if (!rlEnableVertexArray(mesh.vaoId))
     {
         // Bind mesh VBO data: vertex position (shader-location = 0)
@@ -1589,10 +1323,10 @@ void DrawMesh(Mesh mesh, Material material, Matrix transform)
             }
             else
             {
-                // Set default value for defined vertex attribute in shader but not provided by mesh
-                // WARNING: It could result in GPU undefined behaviour
+                // Set default value for unused attribute
+                // NOTE: Required when using default shader and no VAO support
                 float value[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
-                rlSetVertexAttributeDefault(material.shader.locs[SHADER_LOC_VERTEX_COLOR], value, SHADER_ATTRIB_VEC4, 4);
+                rlSetVertexAttributeDefault(material.shader.locs[SHADER_LOC_VERTEX_COLOR], value, SHADER_ATTRIB_VEC2, 4);
                 rlDisableVertexAttribute(material.shader.locs[SHADER_LOC_VERTEX_COLOR]);
             }
         }
@@ -1613,11 +1347,11 @@ void DrawMesh(Mesh mesh, Material material, Matrix transform)
             rlEnableVertexAttribute(material.shader.locs[SHADER_LOC_VERTEX_TEXCOORD02]);
         }
 
-        if (mesh.indices != NULL) rlEnableVertexBufferElement(mesh.vboId[6]);
-    }
+        if (mesh.indices != NULL) {
 
-    // WARNING: Disable vertex attribute color input if mesh can not provide that data (despite location being enabled in shader)
-    if (mesh.vboId[3] == 0) rlDisableVertexAttribute(material.shader.locs[SHADER_LOC_VERTEX_COLOR]);
+            rlEnableVertexBufferElement(mesh.vboId[6]);
+        }
+    }
 
     int eyeCount = 1;
     if (rlIsStereoRenderEnabled()) eyeCount = 2;
@@ -1638,24 +1372,27 @@ void DrawMesh(Mesh mesh, Material material, Matrix transform)
         rlSetUniformMatrix(material.shader.locs[SHADER_LOC_MATRIX_MVP], matModelViewProjection);
 
         // Draw mesh
-        if (mesh.indices != NULL) rlDrawVertexArrayElements(0, mesh.triangleCount*3, 0);
-        else rlDrawVertexArray(0, mesh.vertexCount);
+        if (mesh.indices != NULL) {
+//            TRACELOG(LOG_INFO, "MODEL: INDICES: Indices exist. Enabling vertex array elements.");
+            rlDrawVertexArrayElements(0, mesh.triangleCount*3, NULL);
+        } else {
+            rlDrawVertexArray(0, mesh.vertexCount);
+        }
+
+//        rlDrawVertexArray(0, mesh.vertexCount);
     }
 
     // Unbind all binded texture maps
     for (int i = 0; i < MAX_MATERIAL_MAPS; i++)
     {
-        if (material.maps[i].texture.id > 0)
-        {
-            // Select current shader texture slot
-            rlActiveTextureSlot(i);
+        // Select current shader texture slot
+        rlActiveTextureSlot(i);
 
-            // Disable texture for active slot
-            if ((i == MATERIAL_MAP_IRRADIANCE) ||
-                (i == MATERIAL_MAP_PREFILTER) ||
-                (i == MATERIAL_MAP_CUBEMAP)) rlDisableTextureCubemap();
-            else rlDisableTexture();
-        }
+        // Disable texture for active slot
+        if ((i == MATERIAL_MAP_IRRADIANCE) ||
+            (i == MATERIAL_MAP_PREFILTER) ||
+            (i == MATERIAL_MAP_CUBEMAP)) rlDisableTextureCubemap();
+        else rlDisableTexture();
     }
 
     // Disable all possible vertex array objects (or VBOs)
@@ -1673,7 +1410,7 @@ void DrawMesh(Mesh mesh, Material material, Matrix transform)
 }
 
 // Draw multiple mesh instances with material and different transforms
-void DrawMeshInstanced(Mesh mesh, Material material, const Matrix *transforms, int instances)
+void DrawMeshInstanced(Mesh mesh, Material material, Matrix *transforms, int instances)
 {
 #if defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
     // Instancing required variables
@@ -1813,7 +1550,7 @@ void DrawMeshInstanced(Mesh mesh, Material material, const Matrix *transforms, i
                 // Set default value for unused attribute
                 // NOTE: Required when using default shader and no VAO support
                 float value[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
-                rlSetVertexAttributeDefault(material.shader.locs[SHADER_LOC_VERTEX_COLOR], value, SHADER_ATTRIB_VEC4, 4);
+                rlSetVertexAttributeDefault(material.shader.locs[SHADER_LOC_VERTEX_COLOR], value, SHADER_ATTRIB_VEC2, 4);
                 rlDisableVertexAttribute(material.shader.locs[SHADER_LOC_VERTEX_COLOR]);
             }
         }
@@ -1836,9 +1573,6 @@ void DrawMeshInstanced(Mesh mesh, Material material, const Matrix *transforms, i
 
         if (mesh.indices != NULL) rlEnableVertexBufferElement(mesh.vboId[6]);
     }
-
-    // WARNING: Disable vertex attribute color input if mesh can not provide that data (despite location being enabled in shader)
-    if (mesh.vboId[3] == 0) rlDisableVertexAttribute(material.shader.locs[SHADER_LOC_VERTEX_COLOR]);
 
     int eyeCount = 1;
     if (rlIsStereoRenderEnabled()) eyeCount = 2;
@@ -1866,17 +1600,14 @@ void DrawMeshInstanced(Mesh mesh, Material material, const Matrix *transforms, i
     // Unbind all binded texture maps
     for (int i = 0; i < MAX_MATERIAL_MAPS; i++)
     {
-        if (material.maps[i].texture.id > 0)
-        {
-            // Select current shader texture slot
-            rlActiveTextureSlot(i);
+        // Select current shader texture slot
+        rlActiveTextureSlot(i);
 
-            // Disable texture for active slot
-            if ((i == MATERIAL_MAP_IRRADIANCE) ||
-                (i == MATERIAL_MAP_PREFILTER) ||
-                (i == MATERIAL_MAP_CUBEMAP)) rlDisableTextureCubemap();
-            else rlDisableTexture();
-        }
+        // Disable texture for active slot
+        if ((i == MATERIAL_MAP_IRRADIANCE) ||
+            (i == MATERIAL_MAP_PREFILTER) ||
+            (i == MATERIAL_MAP_CUBEMAP)) rlDisableTextureCubemap();
+        else rlDisableTexture();
     }
 
     // Disable all possible vertex array objects (or VBOs)
@@ -1899,7 +1630,7 @@ void UnloadMesh(Mesh mesh)
     // Unload rlgl mesh vboId data
     rlUnloadVertexArray(mesh.vaoId);
 
-    if (mesh.vboId != NULL) for (int i = 0; i < MAX_MESH_VERTEX_BUFFERS; i++) rlUnloadVertexBuffer(mesh.vboId[i]);
+    for (int i = 0; i < MAX_MESH_VERTEX_BUFFERS; i++) rlUnloadVertexBuffer(mesh.vboId[i]);
     RL_FREE(mesh.vboId);
 
     RL_FREE(mesh.vertices);
@@ -1924,13 +1655,13 @@ bool ExportMesh(Mesh mesh, const char *fileName)
     if (IsFileExtension(fileName, ".obj"))
     {
         // Estimated data size, it should be enough...
-        int dataSize = mesh.vertexCount*(int)strlen("v 0000.00f 0000.00f 0000.00f") +
-                       mesh.vertexCount*(int)strlen("vt 0.000f 0.00f") +
-                       mesh.vertexCount*(int)strlen("vn 0.000f 0.00f 0.00f") +
-                       mesh.triangleCount*(int)strlen("f 00000/00000/00000 00000/00000/00000 00000/00000/00000");
+        int dataSize = mesh.vertexCount/3* (int)strlen("v 0000.00f 0000.00f 0000.00f") +
+                       mesh.vertexCount/2* (int)strlen("vt 0.000f 0.00f") +
+                       mesh.vertexCount/3* (int)strlen("vn 0.000f 0.00f 0.00f") +
+                       mesh.triangleCount/3* (int)strlen("f 00000/00000/00000 00000/00000/00000 00000/00000/00000");
 
         // NOTE: Text data buffer size is estimated considering mesh data size
-        char *txtData = (char *)RL_CALLOC(dataSize*2 + 2000, sizeof(char));
+        char *txtData = (char *)RL_CALLOC(dataSize + 2000, sizeof(char));
 
         int byteCount = 0;
         byteCount += sprintf(txtData + byteCount, "# //////////////////////////////////////////////////////////////////////////////////\n");
@@ -1940,7 +1671,7 @@ bool ExportMesh(Mesh mesh, const char *fileName)
         byteCount += sprintf(txtData + byteCount, "# // more info and bugs-report:  github.com/raysan5/raylib                        //\n");
         byteCount += sprintf(txtData + byteCount, "# // feedback and support:       ray[at]raylib.com                                //\n");
         byteCount += sprintf(txtData + byteCount, "# //                                                                              //\n");
-        byteCount += sprintf(txtData + byteCount, "# // Copyright (c) 2018-2022 Ramon Santamaria (@raysan5)                          //\n");
+        byteCount += sprintf(txtData + byteCount, "# // Copyright (c) 2018 Ramon Santamaria (@raysan5)                               //\n");
         byteCount += sprintf(txtData + byteCount, "# //                                                                              //\n");
         byteCount += sprintf(txtData + byteCount, "# //////////////////////////////////////////////////////////////////////////////////\n\n");
         byteCount += sprintf(txtData + byteCount, "# Vertex Count:     %i\n", mesh.vertexCount);
@@ -1963,22 +1694,9 @@ bool ExportMesh(Mesh mesh, const char *fileName)
             byteCount += sprintf(txtData + byteCount, "vn %.3f %.3f %.3f\n", mesh.normals[v], mesh.normals[v + 1], mesh.normals[v + 2]);
         }
 
-        if (mesh.indices != NULL)
+        for (int i = 0; i < mesh.triangleCount; i += 3)
         {
-            for (int i = 0, v = 0; i < mesh.triangleCount; i++, v += 3)
-            {
-                byteCount += sprintf(txtData + byteCount, "f %i/%i/%i %i/%i/%i %i/%i/%i\n",
-                    mesh.indices[v] + 1, mesh.indices[v] + 1, mesh.indices[v] + 1,
-                    mesh.indices[v + 1] + 1, mesh.indices[v + 1] + 1, mesh.indices[v + 1] + 1,
-                    mesh.indices[v + 2] + 1, mesh.indices[v + 2] + 1, mesh.indices[v + 2] + 1);
-            }
-        }
-        else
-        {
-            for (int i = 0, v = 1; i < mesh.triangleCount; i++, v += 3)
-            {
-                byteCount += sprintf(txtData + byteCount, "f %i/%i/%i %i/%i/%i %i/%i/%i\n", v, v, v, v + 1, v + 1, v + 1, v + 2, v + 2, v + 2);
-            }
+            byteCount += sprintf(txtData + byteCount, "f %i/%i/%i %i/%i/%i %i/%i/%i\n", i, i, i, i + 1, i + 1, i + 1, i + 2, i + 2, i + 2);
         }
 
         byteCount += sprintf(txtData + byteCount, "\n");
@@ -1995,6 +1713,7 @@ bool ExportMesh(Mesh mesh, const char *fileName)
 
     return success;
 }
+
 
 // Load materials from model file
 Material *LoadMaterials(const char *fileName, int *materialCount)
@@ -2062,12 +1781,9 @@ void UnloadMaterial(Material material)
     if (material.shader.id != rlGetShaderIdDefault()) UnloadShader(material.shader);
 
     // Unload loaded texture maps (avoid unloading default texture, managed by raylib)
-    if (material.maps != NULL)
+    for (int i = 0; i < MAX_MATERIAL_MAPS; i++)
     {
-        for (int i = 0; i < MAX_MATERIAL_MAPS; i++)
-        {
-            if (material.maps[i].texture.id != rlGetTextureIdDefault()) rlUnloadTexture(material.maps[i].texture.id);
-        }
+        if (material.maps[i].texture.id != rlGetTextureIdDefault()) rlUnloadTexture(material.maps[i].texture.id);
     }
 
     RL_FREE(material.maps);
@@ -2095,9 +1811,6 @@ ModelAnimation *LoadModelAnimations(const char *fileName, unsigned int *animCoun
 
 #if defined(SUPPORT_FILEFORMAT_IQM)
     if (IsFileExtension(fileName, ".iqm")) animations = LoadModelAnimationsIQM(fileName, animCount);
-#endif
-#if defined(SUPPORT_FILEFORMAT_M3D)
-    if (IsFileExtension(fileName, ".m3d")) animations = LoadModelAnimationsM3D(fileName, animCount);
 #endif
 #if defined(SUPPORT_FILEFORMAT_GLTF)
     //if (IsFileExtension(fileName, ".gltf;.glb")) animations = LoadModelAnimationGLTF(fileName, animCount);
@@ -2208,7 +1921,7 @@ void UpdateModelAnimation(Model model, ModelAnimation anim, int frame)
 }
 
 // Unload animation array data
-void UnloadModelAnimations(ModelAnimation *animations, unsigned int count)
+void UnloadModelAnimations(ModelAnimation* animations, unsigned int count)
 {
     for (unsigned int i = 0; i < count; i++) UnloadModelAnimation(animations[i]);
     RL_FREE(animations);
@@ -2374,7 +2087,7 @@ Mesh GenMeshPlane(float width, float length, int resX, int resZ)
     mesh.vertices = (float *)RL_MALLOC(mesh.vertexCount*3*sizeof(float));
     mesh.texcoords = (float *)RL_MALLOC(mesh.vertexCount*2*sizeof(float));
     mesh.normals = (float *)RL_MALLOC(mesh.vertexCount*3*sizeof(float));
-    mesh.indices = (unsigned short *)RL_MALLOC(mesh.triangleCount*3*sizeof(unsigned short));
+    mesh.indices = (unsigned int *)RL_MALLOC(mesh.triangleCount*3*sizeof(unsigned int));
 
     // Mesh vertices position array
     for (int i = 0; i < mesh.vertexCount; i++)
@@ -2541,19 +2254,19 @@ Mesh GenMeshCube(float width, float height, float length)
     mesh.normals = (float *)RL_MALLOC(24*3*sizeof(float));
     memcpy(mesh.normals, normals, 24*3*sizeof(float));
 
-    mesh.indices = (unsigned short *)RL_MALLOC(36*sizeof(unsigned short));
+    mesh.indices = (unsigned int *)RL_MALLOC(36*sizeof(unsigned int));
 
     int k = 0;
 
     // Indices can be initialized right now
-    for (int i = 0; i < 36; i += 6)
+    for (int i = 0; i < 36; i+=6)
     {
         mesh.indices[i] = 4*k;
-        mesh.indices[i + 1] = 4*k + 1;
-        mesh.indices[i + 2] = 4*k + 2;
-        mesh.indices[i + 3] = 4*k;
-        mesh.indices[i + 4] = 4*k + 2;
-        mesh.indices[i + 5] = 4*k + 3;
+        mesh.indices[i+1] = 4*k+1;
+        mesh.indices[i+2] = 4*k+2;
+        mesh.indices[i+3] = 4*k;
+        mesh.indices[i+4] = 4*k+2;
+        mesh.indices[i+5] = 4*k+3;
 
         k++;
     }
@@ -2709,13 +2422,13 @@ Mesh GenMeshCylinder(float radius, float height, int slices)
         par_shapes_mesh *cylinder = par_shapes_create_cylinder(slices, 8);
         par_shapes_scale(cylinder, radius, radius, height);
         par_shapes_rotate(cylinder, -PI/2.0f, (float[]){ 1, 0, 0 });
+        par_shapes_rotate(cylinder, PI/2.0f, (float[]){ 0, 1, 0 });
 
         // Generate an orientable disk shape (top cap)
         par_shapes_mesh *capTop = par_shapes_create_disk(radius, slices, (float[]){ 0, 0, 0 }, (float[]){ 0, 0, 1 });
         capTop->tcoords = PAR_MALLOC(float, 2*capTop->npoints);
         for (int i = 0; i < 2*capTop->npoints; i++) capTop->tcoords[i] = 0.0f;
         par_shapes_rotate(capTop, -PI/2.0f, (float[]){ 1, 0, 0 });
-        par_shapes_rotate(capTop, 90*DEG2RAD, (float[]){ 0, 1, 0 });
         par_shapes_translate(capTop, 0, height, 0);
 
         // Generate an orientable disk shape (bottom cap)
@@ -2723,7 +2436,6 @@ Mesh GenMeshCylinder(float radius, float height, int slices)
         capBottom->tcoords = PAR_MALLOC(float, 2*capBottom->npoints);
         for (int i = 0; i < 2*capBottom->npoints; i++) capBottom->tcoords[i] = 0.95f;
         par_shapes_rotate(capBottom, PI/2.0f, (float[]){ 1, 0, 0 });
-        par_shapes_rotate(capBottom, -90*DEG2RAD, (float[]){ 0, 1, 0 });
 
         par_shapes_merge_and_free(cylinder, capTop);
         par_shapes_merge_and_free(cylinder, capBottom);
@@ -2908,7 +2620,7 @@ Mesh GenMeshKnot(float radius, float size, int radSeg, int sides)
 // NOTE: Vertex data is uploaded to GPU
 Mesh GenMeshHeightmap(Image heightmap, Vector3 size)
 {
-    #define GRAY_VALUE(c) ((float)(c.r + c.g + c.b)/3.0f)
+    #define GRAY_VALUE(c) ((c.r+c.g+c.b)/3)
 
     Mesh mesh = { 0 };
 
@@ -2918,7 +2630,7 @@ Mesh GenMeshHeightmap(Image heightmap, Vector3 size)
     Color *pixels = LoadImageColors(heightmap);
 
     // NOTE: One vertex per pixel
-    mesh.triangleCount = (mapX - 1)*(mapZ - 1)*2;    // One quad every four pixels
+    mesh.triangleCount = (mapX-1)*(mapZ-1)*2;    // One quad every four pixels
 
     mesh.vertexCount = mesh.triangleCount*3;
 
@@ -2931,7 +2643,9 @@ Mesh GenMeshHeightmap(Image heightmap, Vector3 size)
     int tcCounter = 0;      // Used to count texcoords float by float
     int nCounter = 0;       // Used to count normals float by float
 
-    Vector3 scaleFactor = { size.x/(mapX - 1), size.y/255.0f, size.z/(mapZ - 1) };
+    int trisCounter = 0;
+
+    Vector3 scaleFactor = { size.x/mapX, size.y/255.0f, size.z/mapZ };
 
     Vector3 vA = { 0 };
     Vector3 vB = { 0 };
@@ -2947,18 +2661,18 @@ Mesh GenMeshHeightmap(Image heightmap, Vector3 size)
 
             // one triangle - 3 vertex
             mesh.vertices[vCounter] = (float)x*scaleFactor.x;
-            mesh.vertices[vCounter + 1] = GRAY_VALUE(pixels[x + z*mapX])*scaleFactor.y;
+            mesh.vertices[vCounter + 1] = (float)GRAY_VALUE(pixels[x + z*mapX])*scaleFactor.y;
             mesh.vertices[vCounter + 2] = (float)z*scaleFactor.z;
 
             mesh.vertices[vCounter + 3] = (float)x*scaleFactor.x;
-            mesh.vertices[vCounter + 4] = GRAY_VALUE(pixels[x + (z + 1)*mapX])*scaleFactor.y;
+            mesh.vertices[vCounter + 4] = (float)GRAY_VALUE(pixels[x + (z + 1)*mapX])*scaleFactor.y;
             mesh.vertices[vCounter + 5] = (float)(z + 1)*scaleFactor.z;
 
             mesh.vertices[vCounter + 6] = (float)(x + 1)*scaleFactor.x;
-            mesh.vertices[vCounter + 7] = GRAY_VALUE(pixels[(x + 1) + z*mapX])*scaleFactor.y;
+            mesh.vertices[vCounter + 7] = (float)GRAY_VALUE(pixels[(x + 1) + z*mapX])*scaleFactor.y;
             mesh.vertices[vCounter + 8] = (float)z*scaleFactor.z;
 
-            // Another triangle - 3 vertex
+            // another triangle - 3 vertex
             mesh.vertices[vCounter + 9] = mesh.vertices[vCounter + 6];
             mesh.vertices[vCounter + 10] = mesh.vertices[vCounter + 7];
             mesh.vertices[vCounter + 11] = mesh.vertices[vCounter + 8];
@@ -2968,7 +2682,7 @@ Mesh GenMeshHeightmap(Image heightmap, Vector3 size)
             mesh.vertices[vCounter + 14] = mesh.vertices[vCounter + 5];
 
             mesh.vertices[vCounter + 15] = (float)(x + 1)*scaleFactor.x;
-            mesh.vertices[vCounter + 16] = GRAY_VALUE(pixels[(x + 1) + (z + 1)*mapX])*scaleFactor.y;
+            mesh.vertices[vCounter + 16] = (float)GRAY_VALUE(pixels[(x + 1) + (z + 1)*mapX])*scaleFactor.y;
             mesh.vertices[vCounter + 17] = (float)(z + 1)*scaleFactor.z;
             vCounter += 18;     // 6 vertex, 18 floats
 
@@ -3025,6 +2739,7 @@ Mesh GenMeshHeightmap(Image heightmap, Vector3 size)
             }
 
             nCounter += 18;     // 6 vertex, 18 floats
+            trisCounter += 2;
         }
     }
 
@@ -3518,6 +3233,19 @@ void GenMeshTangents(Mesh *mesh)
     TRACELOG(LOG_INFO, "MESH: Tangents data computed and uploaded for provided mesh");
 }
 
+// Compute mesh binormals (aka bitangent)
+void GenMeshBinormals(Mesh *mesh)
+{
+    for (int i = 0; i < mesh->vertexCount; i++)
+    {
+        //Vector3 normal = { mesh->normals[i*3 + 0], mesh->normals[i*3 + 1], mesh->normals[i*3 + 2] };
+        //Vector3 tangent = { mesh->tangents[i*4 + 0], mesh->tangents[i*4 + 1], mesh->tangents[i*4 + 2] };
+        //Vector3 binormal = Vector3Scale(Vector3CrossProduct(normal, tangent), mesh->tangents[i*4 + 3]);
+
+        // TODO: Register computed binormal in mesh->binormal?
+    }
+}
+
 // Draw a model (with texture if set)
 void DrawModel(Model model, Vector3 position, float scale, Color tint)
 {
@@ -3546,10 +3274,10 @@ void DrawModelEx(Model model, Vector3 position, Vector3 rotationAxis, float rota
         Color color = model.materials[model.meshMaterial[i]].maps[MATERIAL_MAP_DIFFUSE].color;
 
         Color colorTint = WHITE;
-        colorTint.r = (unsigned char)((((float)color.r/255.0f)*((float)tint.r/255.0f))*255.0f);
-        colorTint.g = (unsigned char)((((float)color.g/255.0f)*((float)tint.g/255.0f))*255.0f);
-        colorTint.b = (unsigned char)((((float)color.b/255.0f)*((float)tint.b/255.0f))*255.0f);
-        colorTint.a = (unsigned char)((((float)color.a/255.0f)*((float)tint.a/255.0f))*255.0f);
+        colorTint.r = (unsigned char)((((float)color.r/255.0)*((float)tint.r/255.0))*255.0f);
+        colorTint.g = (unsigned char)((((float)color.g/255.0)*((float)tint.g/255.0))*255.0f);
+        colorTint.b = (unsigned char)((((float)color.b/255.0)*((float)tint.b/255.0))*255.0f);
+        colorTint.a = (unsigned char)((((float)color.a/255.0)*((float)tint.a/255.0))*255.0f);
 
         model.materials[model.meshMaterial[i]].maps[MATERIAL_MAP_DIFFUSE].color = colorTint;
         DrawMesh(model.meshes[i], model.materials[model.meshMaterial[i]], model.transform);
@@ -3597,7 +3325,7 @@ void DrawBillboardRec(Camera camera, Texture2D texture, Rectangle source, Vector
 void DrawBillboardPro(Camera camera, Texture2D texture, Rectangle source, Vector3 position, Vector3 up, Vector2 size, Vector2 origin, float rotation, Color tint)
 {
     // NOTE: Billboard size will maintain source rectangle aspect ratio, size will represent billboard width
-    Vector2 sizeRatio = { size.x*(float)source.width/source.height, size.y };
+    Vector2 sizeRatio = { size.y, size.x*(float)source.height/source.width };
 
     Matrix matView = MatrixLookAt(camera.position, camera.target, camera.up);
 
@@ -3657,6 +3385,8 @@ void DrawBillboardPro(Camera camera, Texture2D texture, Rectangle source, Vector
     topRight = Vector3Add(topRight, position);
     bottomRight = Vector3Add(bottomRight, position);
     bottomLeft = Vector3Add(bottomLeft, position);
+
+    rlCheckRenderBatchLimit(4);
 
     rlSetTexture(texture.id);
 
@@ -3900,12 +3630,31 @@ RayCollision GetRayCollisionMesh(Ray ray, Mesh mesh, Matrix transform)
     return collision;
 }
 
+// Get collision info between ray and model
+RayCollision GetRayCollisionModel(Ray ray, Model model)
+{
+    RayCollision collision = { 0 };
+
+    for (int m = 0; m < model.meshCount; m++)
+    {
+        RayCollision meshHitInfo = GetRayCollisionMesh(ray, model.meshes[m], model.transform);
+
+        if (meshHitInfo.hit)
+        {
+            // Save the closest hit mesh
+            if ((!collision.hit) || (collision.distance > meshHitInfo.distance)) collision = meshHitInfo;
+        }
+    }
+
+    return collision;
+}
+
 // Get collision info between ray and triangle
 // NOTE: The points are expected to be in counter-clockwise winding
 // NOTE: Based on https://en.wikipedia.org/wiki/M%C3%B6ller%E2%80%93Trumbore_intersection_algorithm
 RayCollision GetRayCollisionTriangle(Ray ray, Vector3 p1, Vector3 p2, Vector3 p3)
 {
-    #define EPSILON 0.000001f        // A small number
+    #define EPSILON 0.000001        // A small number
 
     RayCollision collision = { 0 };
     Vector3 edge1 = { 0 };
@@ -3997,7 +3746,9 @@ static Model LoadOBJ(const char *fileName)
     char *fileText = LoadFileText(fileName);
 
     if (fileText != NULL)
-    {
+    {   
+        TRACELOG(LOG_INFO, "MODEL: file text exists. Handling ...");
+
         unsigned int dataSize = (unsigned int)strlen(fileText);
         char currentDir[1024] = { 0 };
         strcpy(currentDir, GetWorkingDirectory());
@@ -4008,8 +3759,10 @@ static Model LoadOBJ(const char *fileName)
         }
 
         unsigned int flags = TINYOBJ_FLAG_TRIANGULATE;
+        TRACELOG(LOG_INFO, "MODEL: Parsing OBJ file content ...");
         int ret = tinyobj_parse_obj(&attrib, &meshes, &meshCount, &materials, &materialCount, fileText, dataSize, flags);
-
+        TRACELOG(LOG_INFO, "MODEL: Parsing of OBJ file content done.");
+    
         if (ret != TINYOBJ_SUCCESS) TRACELOG(LOG_WARNING, "MODEL: [%s] Failed to load OBJ data", fileName);
         else TRACELOG(LOG_INFO, "MODEL: [%s] OBJ data loaded successfully: %i meshes/%i materials", fileName, meshCount, materialCount);
 
@@ -4030,10 +3783,14 @@ static Model LoadOBJ(const char *fileName)
 
         model.meshes = (Mesh *)RL_CALLOC(model.meshCount, sizeof(Mesh));
         model.meshMaterial = (int *)RL_CALLOC(model.meshCount, sizeof(int));
+        TraceLog(LOG_INFO, "MODEL: meshes and meshMaterials allocated.");
 
         // Count the faces for each material
         int *matFaces = RL_CALLOC(model.meshCount, sizeof(int));
+        TraceLog(LOG_INFO, "MODEL: matFaces allocated.");
 
+        model.vertices = (float *)RL_CALLOC(attrib.num_vertices*3, sizeof(float));
+        TraceLog(LOG_INFO, "MODEL: Model vertices allocated.");
         // iff no materials are present use all faces on one mesh
         if (materialCount > 0)
         {
@@ -4043,13 +3800,12 @@ static Model LoadOBJ(const char *fileName)
                 int idx = attrib.material_ids[fi];
                 matFaces[idx]++;
             }
-
         }
         else
         {
             matFaces[0] = attrib.num_faces;
         }
-
+        TraceLog(LOG_INFO, "MODEL: matFaces set.");
         //--------------------------------------
         // Create the material meshes
 
@@ -4068,8 +3824,11 @@ static Model LoadOBJ(const char *fileName)
             model.meshes[mi].vertices = (float *)RL_CALLOC(model.meshes[mi].vertexCount*3, sizeof(float));
             model.meshes[mi].texcoords = (float *)RL_CALLOC(model.meshes[mi].vertexCount*2, sizeof(float));
             model.meshes[mi].normals = (float *)RL_CALLOC(model.meshes[mi].vertexCount*3, sizeof(float));
+
+            model.meshes[mi].indices = (unsigned int *)RL_CALLOC(matFaces[mi]*3, sizeof(unsigned int));
             model.meshMaterial[mi] = mi;
         }
+        TraceLog(LOG_INFO, "MODEL: Allocated space for each material mesh.");
 
         // Scan through the combined sub meshes and pick out each material mesh
         for (unsigned int af = 0; af < attrib.num_faces; af++)
@@ -4077,16 +3836,35 @@ static Model LoadOBJ(const char *fileName)
             int mm = attrib.material_ids[af];   // mesh material for this face
             if (mm == -1) { mm = 0; }           // no material object..
 
-            // Get indices for the face
-            tinyobj_vertex_index_t idx0 = attrib.faces[3*af + 0];
-            tinyobj_vertex_index_t idx1 = attrib.faces[3*af + 1];
-            tinyobj_vertex_index_t idx2 = attrib.faces[3*af + 2];
+            // Get indices for the face (current face)
+            tinyobj_vertex_index_t idx0 = attrib.faces[3*af + 0]; // one point
+            tinyobj_vertex_index_t idx1 = attrib.faces[3*af + 1]; // one point
+            tinyobj_vertex_index_t idx2 = attrib.faces[3*af + 2]; // one point
 
-            // Fill vertices buffer (float) using vertex index of the face
-            for (int v = 0; v < 3; v++) { model.meshes[mm].vertices[vCount[mm] + v] = attrib.vertices[idx0.v_idx*3 + v]; } vCount[mm] +=3;
-            for (int v = 0; v < 3; v++) { model.meshes[mm].vertices[vCount[mm] + v] = attrib.vertices[idx1.v_idx*3 + v]; } vCount[mm] +=3;
-            for (int v = 0; v < 3; v++) { model.meshes[mm].vertices[vCount[mm] + v] = attrib.vertices[idx2.v_idx*3 + v]; } vCount[mm] +=3;
+            // Fill vertices buffer (float) using vertex index of the face                          // 3 floats for each index.
+            // --> for the graphics layer.
+//            for (int v = 0; v < 3; v++) { model.meshes[mm].vertices[vCount[mm] + v] = attrib.vertices[idx0.v_idx*3 + v]; } vCount[mm] +=3; // one v
+//            for (int v = 0; v < 3; v++) { model.meshes[mm].vertices[vCount[mm] + v] = attrib.vertices[idx1.v_idx*3 + v]; } vCount[mm] +=3; // one v
+//            for (int v = 0; v < 3; v++) { model.meshes[mm].vertices[vCount[mm] + v] = attrib.vertices[idx2.v_idx*3 + v]; } vCount[mm] +=3; // one v
 
+
+            // Fill each mesh vertex array with all the available object vertices.
+//            for (int v = 0; v < 3; v++) { model.meshes[mm].vertices[vCount[mm] + v] = attrib.vertices[vCount[mm] + v]; } vCount[mm] +=3;
+//            for (int v = 0; v < 3; v++) { model.meshes[mm].vertices[vCount[mm] + v] = attrib.vertices[3*total_vertices + v]; } vCount[mm] +=3; // one v
+//            for (int v = 0; v < 3; v++) { model.meshes[mm].vertices[vCount[mm] + v] = attrib.vertices[3*total_vertices + v]; } vCount[mm] +=3; // one v
+            // Alternatively, we add every vertex in order, independent of its index.
+            // --> so that it can be indexed through the index array populated below.
+//            for ( int v = 0; v < 3; v++ ) {
+//                model.meshes[mm].vertices[vCount[mm] + v] = attrib.vertices[vCount[mm] + v]; 
+//            }
+//            vCount[mm] +=3;
+
+            // Fill indices array with the indices relevant for current face of current mesh.
+            model.meshes[mm].indices[faceCount[mm] + 0] =  idx0.v_idx; // first vertex
+            model.meshes[mm].indices[faceCount[mm] + 1] =  idx1.v_idx; // second vertex
+            model.meshes[mm].indices[faceCount[mm] + 2] =  idx2.v_idx; // third vertex
+            faceCount[mm] += 3;
+/*
             if (attrib.num_texcoords > 0)
             {
                 // Fill texcoords buffer (float) using vertex index of the face
@@ -4107,7 +3885,53 @@ static Model LoadOBJ(const char *fileName)
                 for (int v = 0; v < 3; v++) { model.meshes[mm].normals[vnCount[mm] + v] = attrib.normals[idx1.vn_idx*3 + v]; } vnCount[mm] +=3;
                 for (int v = 0; v < 3; v++) { model.meshes[mm].normals[vnCount[mm] + v] = attrib.normals[idx2.vn_idx*3 + v]; } vnCount[mm] +=3;
             }
+*/
         }
+        TraceLog(LOG_INFO, "MODEL: Non-Vertex Mesh Data set from attributes.");
+
+        // set all the vertices from the original for each mesh, regardless of index.
+        // this way we can keep index buffer and vertex buffer seperate.
+        // --> for the physics layer.
+
+        // store vertices in model vertices array.
+        for ( int vc = 0; vc < attrib.num_vertices ; vc++) {
+            //                  3 floats per vertex.
+            for (int v = 0; v < 3; v++) {
+                model.vertices[3*vc + v] = attrib.vertices[3*vc + v];
+            }
+        }
+
+        // store vertices in all meshes.
+        // -- TODO: change DrawModel/DrawMesh to only take pointer to model vertices, texcoords, and normals array (see above)
+        // -- so we do not have to store the same vertices, texcoords, normals in every mesh!
+
+        for ( int i = 0; i < model.meshCount ; i++ ) {
+            if (attrib.num_normals > 0) {
+                for (int vc = 0 ; vc < attrib.num_normals ; vc++) {
+                    for (int v = 0; v < 3; v++) {
+                        model.meshes[i].normals[3*vc + v] = attrib.normals[3*vc + v];
+                    }
+                }
+            }
+
+            if (attrib.num_texcoords > 0) {
+                for (int vc = 0 ; vc < attrib.num_texcoords ; vc++) {
+                    for (int v = 0; v < 2; v++) {
+                        model.meshes[i].texcoords[2*vc + v] = attrib.texcoords[2*vc + v];
+                    }
+                }
+            }
+            
+            for (int vc = 0 ; vc < attrib.num_vertices ; vc++) {
+                //              3 floats per vertex.
+                for (int v = 0; v < 3; v++) {
+                    model.meshes[i].vertices[3*vc + v] = attrib.vertices[3*vc + v];
+                }
+            }
+        }
+            // no texcoords or normals
+
+        TraceLog(LOG_INFO, "MODEL: Model Vertex Data set from attributes.");
 
         // Init model materials
         for (unsigned int m = 0; m < materialCount; m++)
@@ -4138,6 +3962,9 @@ static Model LoadOBJ(const char *fileName)
             if (materials[m].displacement_texname != NULL) model.materials[m].maps[MATERIAL_MAP_HEIGHT].texture = LoadTexture(materials[m].displacement_texname);  //char *displacement_texname; // disp
         }
 
+
+        TraceLog(LOG_INFO, "MODEL: Model materials initialized.");
+
         tinyobj_attrib_free(&attrib);
         tinyobj_shapes_free(meshes, meshCount);
         tinyobj_materials_free(materials, materialCount);
@@ -4154,6 +3981,8 @@ static Model LoadOBJ(const char *fileName)
         {
             TRACELOG(LOG_WARNING, "MODEL: [%s] Failed to change working directory", currentDir);
         }
+    } else {
+        TRACELOG(LOG_INFO, "MODEL: file text does not exist. Returning empty model ...");
     }
 
     return model;
@@ -4332,7 +4161,7 @@ static Model LoadIQM(const char *fileName)
         model.meshes[i].boneWeights = RL_CALLOC(model.meshes[i].vertexCount*4, sizeof(float));      // Up-to 4 bones supported!
 
         model.meshes[i].triangleCount = imesh[i].num_triangles;
-        model.meshes[i].indices = RL_CALLOC(model.meshes[i].triangleCount*3, sizeof(unsigned short));
+        model.meshes[i].indices = RL_CALLOC(model.meshes[i].triangleCount*3, sizeof(unsigned int));
 
         // Animated verted data, what we actually process for rendering
         // NOTE: Animated vertex should be re-uploaded to GPU (if not using GPU skinning)
@@ -4537,13 +4366,12 @@ static Model LoadIQM(const char *fileName)
     RL_FREE(blendi);
     RL_FREE(blendw);
     RL_FREE(ijoint);
-    RL_FREE(color);
 
     return model;
 }
 
 // Load IQM animation data
-static ModelAnimation *LoadModelAnimationsIQM(const char *fileName, unsigned int *animCount)
+static ModelAnimation* LoadModelAnimationsIQM(const char *fileName, unsigned int *animCount)
 {
     #define IQM_MAGIC       "INTERQUAKEMODEL"   // IQM file magic number
     #define IQM_VERSION     2                   // only IQM version 2 supported
@@ -4785,7 +4613,7 @@ static Image LoadImageFromCgltfImage(cgltf_image *cgltfImage, const char *texPat
 
                 cgltf_options options = { 0 };
                 cgltf_result result = cgltf_load_buffer_base64(&options, outSize, cgltfImage->uri + i + 1, &data);
-
+                
                 if (result == cgltf_result_success)
                 {
                     image = LoadImageFromMemory(".png", (unsigned char *)data, outSize);
@@ -4813,12 +4641,12 @@ static Image LoadImageFromCgltfImage(cgltf_image *cgltfImage, const char *texPat
 
         // Check mime_type for image: (cgltfImage->mime_type == "image/png")
         // NOTE: Detected that some models define mime_type as "image\\/png"
-        if ((strcmp(cgltfImage->mime_type, "image\\/png") == 0) ||
+        if ((strcmp(cgltfImage->mime_type, "image\\/png") == 0) || 
             (strcmp(cgltfImage->mime_type, "image/png") == 0)) image = LoadImageFromMemory(".png", data, (int)cgltfImage->buffer_view->size);
         else if ((strcmp(cgltfImage->mime_type, "image\\/jpeg") == 0) ||
                  (strcmp(cgltfImage->mime_type, "image/jpeg") == 0)) image = LoadImageFromMemory(".jpg", data, (int)cgltfImage->buffer_view->size);
         else TRACELOG(LOG_WARNING, "MODEL: glTF image data MIME type not recognized", TextFormat("%s/%s", texPath, cgltfImage->uri));
-
+        
         RL_FREE(data);
     }
 
@@ -4879,7 +4707,7 @@ static Model LoadGLTF(const char *fileName)
     cgltf_options options = { 0 };
     cgltf_data *data = NULL;
     cgltf_result result = cgltf_parse(&options, fileData, dataSize, &data);
-
+    
     if (result == cgltf_result_success)
     {
         if (data->file_type == cgltf_file_type_glb) TRACELOG(LOG_INFO, "MODEL: [%s] Model basic data (glb) loaded successfully", fileName);
@@ -4904,9 +4732,10 @@ static Model LoadGLTF(const char *fileName)
         // Load our model data: meshes and materials
         model.meshCount = primitivesCount;
         model.meshes = RL_CALLOC(model.meshCount, sizeof(Mesh));
+        for (int i = 0; i < model.meshCount; i++) model.meshes[i].vboId = (unsigned int*)RL_CALLOC(MAX_MESH_VERTEX_BUFFERS, sizeof(unsigned int));
 
         // NOTE: We keep an extra slot for default material, in case some mesh requires it
-        model.materialCount = (int)data->materials_count + 1;
+        model.materialCount = (int)data->materials_count + 1;       
         model.materials = RL_CALLOC(model.materialCount, sizeof(Material));
         model.materials[0] = LoadMaterialDefault();     // Load default material (index: 0)
 
@@ -4933,12 +4762,13 @@ static Model LoadGLTF(const char *fileName)
                         model.materials[j].maps[MATERIAL_MAP_ALBEDO].texture = LoadTextureFromImage(imAlbedo);
                         UnloadImage(imAlbedo);
                     }
+
+                    // Load base color factor (tint)
+                    model.materials[j].maps[MATERIAL_MAP_ALBEDO].color.r = (unsigned char)(data->materials[i].pbr_metallic_roughness.base_color_factor[0]*255);
+                    model.materials[j].maps[MATERIAL_MAP_ALBEDO].color.g = (unsigned char)(data->materials[i].pbr_metallic_roughness.base_color_factor[1]*255);
+                    model.materials[j].maps[MATERIAL_MAP_ALBEDO].color.b = (unsigned char)(data->materials[i].pbr_metallic_roughness.base_color_factor[2]*255);
+                    model.materials[j].maps[MATERIAL_MAP_ALBEDO].color.a = (unsigned char)(data->materials[i].pbr_metallic_roughness.base_color_factor[3]*255);
                 }
-                // Load base color factor (tint)
-                model.materials[j].maps[MATERIAL_MAP_ALBEDO].color.r = (unsigned char)(data->materials[i].pbr_metallic_roughness.base_color_factor[0]*255);
-                model.materials[j].maps[MATERIAL_MAP_ALBEDO].color.g = (unsigned char)(data->materials[i].pbr_metallic_roughness.base_color_factor[1]*255);
-                model.materials[j].maps[MATERIAL_MAP_ALBEDO].color.b = (unsigned char)(data->materials[i].pbr_metallic_roughness.base_color_factor[2]*255);
-                model.materials[j].maps[MATERIAL_MAP_ALBEDO].color.a = (unsigned char)(data->materials[i].pbr_metallic_roughness.base_color_factor[3]*255);
 
                 // Load metallic/roughness texture
                 if (data->materials[i].pbr_metallic_roughness.metallic_roughness_texture.texture)
@@ -4949,8 +4779,8 @@ static Model LoadGLTF(const char *fileName)
                         model.materials[j].maps[MATERIAL_MAP_ROUGHNESS].texture = LoadTextureFromImage(imMetallicRoughness);
                         UnloadImage(imMetallicRoughness);
                     }
-
-                    // Load metallic/roughness material properties
+                    
+                    // Load metallic/roughness material properties 
                     float roughness = data->materials[i].pbr_metallic_roughness.roughness_factor;
                     model.materials[j].maps[MATERIAL_MAP_ROUGHNESS].value = roughness;
 
@@ -4998,7 +4828,7 @@ static Model LoadGLTF(const char *fileName)
                 }
             }
 
-            // Other possible materials not supported by raylib pipeline:
+            // Other possible materials not supported by raylib pipeline: 
             // has_clearcoat, has_transmission, has_volume, has_ior, has specular, has_sheen
         }
 
@@ -5028,7 +4858,7 @@ static Model LoadGLTF(const char *fileName)
 
                         if ((attribute->component_type == cgltf_component_type_r_32f) && (attribute->type == cgltf_type_vec3))
                         {
-                            // Init raylib mesh vertices to copy glTF attribute data
+                            // Init raylib mesh vertices to copy glTF attribute data 
                             model.meshes[meshIndex].vertexCount = (int)attribute->count;
                             model.meshes[meshIndex].vertices = RL_MALLOC(attribute->count*3*sizeof(float));
 
@@ -5105,7 +4935,7 @@ static Model LoadGLTF(const char *fileName)
                             LOAD_ATTRIBUTE(attribute, 4, unsigned short, temp);
 
                             // Convert data to raylib color data type (4 bytes)
-                            for (unsigned int c = 0; c < attribute->count*4; c++) model.meshes[meshIndex].colors[c] = (unsigned char)(((float)temp[c]/65535.0f)*255.0f);
+                            for (int c = 0; c < attribute->count*4; c++) model.meshes[meshIndex].colors[c] = (unsigned char)(((float)temp[c]/65535.0f)*255.0f);
 
                             RL_FREE(temp);
                         }
@@ -5119,7 +4949,7 @@ static Model LoadGLTF(const char *fileName)
                             LOAD_ATTRIBUTE(attribute, 4, float, temp);
 
                             // Convert data to raylib color data type (4 bytes), we expect the color data normalized
-                            for (unsigned int c = 0; c < attribute->count*4; c++) model.meshes[meshIndex].colors[c] = (unsigned char)(temp[c]*255.0f);
+                            for (int c = 0; c < attribute->count*4; c++) model.meshes[meshIndex].colors[c] = (unsigned char)(temp[c]*255.0f);
 
                             RL_FREE(temp);
                         }
@@ -5147,14 +4977,14 @@ static Model LoadGLTF(const char *fileName)
                     else if (attribute->component_type == cgltf_component_type_r_32u)
                     {
                         // Init raylib mesh indices to copy glTF attribute data
-                        model.meshes[meshIndex].indices = RL_MALLOC(attribute->count*sizeof(unsigned short));
+                        model.meshes[meshIndex].indices = RL_MALLOC(attribute->count*sizeof(unsigned int));
 
                         // Load data into a temp buffer to be converted to raylib data type
-                        unsigned int *temp = RL_MALLOC(attribute->count*sizeof(unsigned int));
-                        LOAD_ATTRIBUTE(attribute, 1, unsigned int, temp);
+                        unsigned short *temp = RL_MALLOC(attribute->count*sizeof(unsigned short));
+                        LOAD_ATTRIBUTE(attribute, 1, unsigned short, temp);
 
                         // Convert data to raylib indices data type (unsigned short)
-                        for (unsigned int d = 0; d < attribute->count; d++) model.meshes[meshIndex].indices[d] = (unsigned short)temp[d];
+                        for (int d = 0; d < attribute->count; d++) model.meshes[meshIndex].indices[d] = (unsigned int)temp[d];
 
                         TRACELOG(LOG_WARNING, "MODEL: [%s] Indices data converted from u32 to u16, possible loss of data", fileName);
 
@@ -5166,7 +4996,7 @@ static Model LoadGLTF(const char *fileName)
 
                 // Assign to the primitive mesh the corresponding material index
                 // NOTE: If no material defined, mesh uses the already assigned default material (index: 0)
-                for (unsigned int m = 0; m < data->materials_count; m++)
+                for (int m = 0; m < data->materials_count; m++)
                 {
                     // The primitive actually keeps the pointer to the corresponding material,
                     // raylib instead assigns to the mesh the by its index, as loaded in model.materials array
@@ -5183,63 +5013,6 @@ static Model LoadGLTF(const char *fileName)
             }
         }
 
-/*
-        // TODO: Load glTF meshes animation data
-        // REF: https://www.khronos.org/registry/glTF/specs/2.0/glTF-2.0.html#skins
-        // REF: https://www.khronos.org/registry/glTF/specs/2.0/glTF-2.0.html#skinned-mesh-attributes
-        //----------------------------------------------------------------------------------------------------
-        for (unsigned int i = 0, meshIndex = 0; i < data->meshes_count; i++)
-        {
-            for (unsigned int p = 0; p < data->meshes[i].primitives_count; p++)
-            {
-                // NOTE: We only support primitives defined by triangles
-                if (data->meshes[i].primitives[p].type != cgltf_primitive_type_triangles) continue;
-
-                for (unsigned int j = 0; j < data->meshes[i].primitives[p].attributes_count; j++)
-                {
-                    // NOTE: JOINTS_1 + WEIGHT_1 will be used for +4 joints influencing a vertex -> Not supported by raylib
-
-                    if (data->meshes[i].primitives[p].attributes[j].type == cgltf_attribute_type_joints)        // JOINTS_n (vec4: 4 bones max per vertex / u8, u16)
-                    {
-                        cgltf_accessor *attribute = data->meshes[i].primitives[p].attributes[j].data;
-
-                        if ((attribute->component_type == cgltf_component_type_r_8u) && (attribute->type == cgltf_type_vec4))
-                        {
-                            // Init raylib mesh bone ids to copy glTF attribute data
-                            model.meshes[meshIndex].boneIds = RL_CALLOC(model.meshes[meshIndex].vertexCount*4, sizeof(unsigned char));
-
-                            // Load 4 components of unsigned char data type into mesh.boneIds
-                            // TODO: It seems LOAD_ATTRIBUTE() macro does not work as expected in some cases,
-                            // for cgltf_attribute_type_joints we have:
-                            //   - data.meshes[0] (256 vertices)
-                            //   - 256 values, provided as cgltf_type_vec4 of bytes (4 byte per joint, stride 4)
-                            LOAD_ATTRIBUTE(attribute, 4, unsigned char, model.meshes[meshIndex].boneIds)
-                        }
-                        else TRACELOG(LOG_WARNING, "MODEL: [%s] Joint attribute data format not supported, use vec4 u8", fileName);
-                    }
-                    else if (data->meshes[i].primitives[p].attributes[j].type == cgltf_attribute_type_weights)  // WEIGHTS_n (vec4 / u8, u16, f32)
-                    {
-                        cgltf_accessor *attribute = data->meshes[i].primitives[p].attributes[j].data;
-
-                        if ((attribute->component_type == cgltf_component_type_r_32f) && (attribute->type == cgltf_type_vec4))
-                        {
-                            // Init raylib mesh bone weight to copy glTF attribute data
-                            model.meshes[meshIndex].boneWeights = RL_CALLOC(model.meshes[meshIndex].vertexCount*4, sizeof(float));
-
-                            // Load 4 components of float data type into mesh.boneWeights
-                            // for cgltf_attribute_type_weights we have:
-                            //   - data.meshes[0] (256 vertices)
-                            //   - 256 values, provided as cgltf_type_vec4 of float (4 byte per joint, stride 16)
-                            LOAD_ATTRIBUTE(attribute, 4, float, model.meshes[meshIndex].boneWeights)
-                        }
-                        else TRACELOG(LOG_WARNING, "MODEL: [%s] Joint weight attribute data format not supported, use vec4 float", fileName);
-                    }
-                }
-
-                meshIndex++;       // Move to next mesh
-            }
-        }
-*/
         // Free all cgltf loaded data
         cgltf_free(data);
     }
@@ -5356,415 +5129,3 @@ static Model LoadVOX(const char *fileName)
     return model;
 }
 #endif
-
-#if defined(SUPPORT_FILEFORMAT_M3D)
-// Hook LoadFileData()/UnloadFileData() calls to M3D loaders
-unsigned char *m3d_loaderhook(char *fn, unsigned int *len) { return LoadFileData((const char *)fn, len); }
-void m3d_freehook(void *data) { UnloadFileData((unsigned char *)data); }
-
-// Load M3D mesh data
-static Model LoadM3D(const char *fileName)
-{
-    Model model = { 0 };
-
-    m3d_t *m3d = NULL;
-    m3dp_t *prop = NULL;
-    unsigned int bytesRead = 0;
-    unsigned char *fileData = LoadFileData(fileName, &bytesRead);
-    int i, j, k, l, n, mi = -2;
-
-    if (fileData != NULL)
-    {
-        m3d = m3d_load(fileData, m3d_loaderhook, m3d_freehook, NULL);
-
-        if (!m3d || M3D_ERR_ISFATAL(m3d->errcode))
-        {
-            TRACELOG(LOG_WARNING, "MODEL: [%s] Failed to load M3D data, error code %d", fileName, m3d ? m3d->errcode : -2);
-            if (m3d) m3d_free(m3d);
-            UnloadFileData(fileData);
-            return model;
-        }
-        else TRACELOG(LOG_INFO, "MODEL: [%s] M3D data loaded successfully: %i faces/%i materials", fileName, m3d->numface, m3d->nummaterial);
-
-        // no face? this is probably just a material library
-        if (!m3d->numface)
-        {
-            m3d_free(m3d);
-            UnloadFileData(fileData);
-            return model;
-        }
-
-        if (m3d->nummaterial > 0)
-        {
-            model.meshCount = model.materialCount = m3d->nummaterial;
-            TRACELOG(LOG_INFO, "MODEL: model has %i material meshes", model.materialCount);
-        }
-        else
-        {
-            model.meshCount = model.materialCount = 1;
-            TRACELOG(LOG_INFO, "MODEL: No materials, putting all meshes in a default material");
-        }
-
-        model.meshes = (Mesh *)RL_CALLOC(model.meshCount, sizeof(Mesh));
-        model.meshMaterial = (int *)RL_CALLOC(model.meshCount, sizeof(int));
-        model.materials = (Material *)RL_CALLOC(model.materialCount + 1, sizeof(Material));
-
-        // Map no material to index 0 with default shader, everything else materialid + 1
-        model.materials[0] = LoadMaterialDefault();
-
-        for (i = l = 0, k = -1; i < m3d->numface; i++, l++)
-        {
-            // Materials are grouped together
-            if (mi != m3d->face[i].materialid)
-            {
-                // there should be only one material switch per material kind, but be bulletproof for unoptimal model files
-                if (k + 1 >= model.meshCount)
-                {
-                    model.meshCount++;
-                    model.meshes = (Mesh *)RL_REALLOC(model.meshes, model.meshCount*sizeof(Mesh));
-                    memset(&model.meshes[model.meshCount - 1], 0, sizeof(Mesh));
-                    model.meshMaterial = (int *)RL_REALLOC(model.meshMaterial, model.meshCount*sizeof(int));
-                }
-
-                k++;
-                mi = m3d->face[i].materialid;
-
-                for (j = i, l = 0; (j < m3d->numface) && (mi == m3d->face[j].materialid); j++, l++);
-
-                model.meshes[k].vertexCount = l*3;
-                model.meshes[k].triangleCount = l;
-                model.meshes[k].vertices = (float *)RL_CALLOC(model.meshes[k].vertexCount*3, sizeof(float));
-                model.meshes[k].texcoords = (float *)RL_CALLOC(model.meshes[k].vertexCount*2, sizeof(float));
-                model.meshes[k].normals = (float *)RL_CALLOC(model.meshes[k].vertexCount*3, sizeof(float));
-                // without material, we rely on vertex colors
-                if (mi == M3D_UNDEF && model.meshes[k].colors == NULL)
-                {
-                    model.meshes[k].colors = RL_CALLOC(model.meshes[k].vertexCount*4, sizeof(unsigned char));
-                    for (j = 0; j < model.meshes[k].vertexCount*4; j += 4) memcpy(&model.meshes[k].colors[j], &WHITE, 4);
-                }
-                if (m3d->numbone && m3d->numskin)
-                {
-                    model.meshes[k].boneIds = (unsigned char *)RL_CALLOC(model.meshes[k].vertexCount*4, sizeof(unsigned char));
-                    model.meshes[k].boneWeights = (float *)RL_CALLOC(model.meshes[k].vertexCount*4, sizeof(float));
-                    model.meshes[k].animVertices = (float *)RL_CALLOC(model.meshes[k].vertexCount*3, sizeof(float));
-                    model.meshes[k].animNormals = (float *)RL_CALLOC(model.meshes[k].vertexCount*3, sizeof(float));
-                }
-                model.meshMaterial[k] = mi + 1;
-                l = 0;
-            }
-
-            // Process meshes per material, add triangles
-            model.meshes[k].vertices[l * 9 + 0] = m3d->vertex[m3d->face[i].vertex[0]].x*m3d->scale;
-            model.meshes[k].vertices[l * 9 + 1] = m3d->vertex[m3d->face[i].vertex[0]].y*m3d->scale;
-            model.meshes[k].vertices[l * 9 + 2] = m3d->vertex[m3d->face[i].vertex[0]].z*m3d->scale;
-            model.meshes[k].vertices[l * 9 + 3] = m3d->vertex[m3d->face[i].vertex[1]].x*m3d->scale;
-            model.meshes[k].vertices[l * 9 + 4] = m3d->vertex[m3d->face[i].vertex[1]].y*m3d->scale;
-            model.meshes[k].vertices[l * 9 + 5] = m3d->vertex[m3d->face[i].vertex[1]].z*m3d->scale;
-            model.meshes[k].vertices[l * 9 + 6] = m3d->vertex[m3d->face[i].vertex[2]].x*m3d->scale;
-            model.meshes[k].vertices[l * 9 + 7] = m3d->vertex[m3d->face[i].vertex[2]].y*m3d->scale;
-            model.meshes[k].vertices[l * 9 + 8] = m3d->vertex[m3d->face[i].vertex[2]].z*m3d->scale;
-
-            if (mi == M3D_UNDEF)
-            {
-                // without vertex color (full transparency), we use the default color
-                if (m3d->vertex[m3d->face[i].vertex[0]].color & 0xFF000000)
-                    memcpy(&model.meshes[k].colors[l * 12 + 0], &m3d->vertex[m3d->face[i].vertex[0]].color, 4);
-                if (m3d->vertex[m3d->face[i].vertex[1]].color & 0xFF000000)
-                    memcpy(&model.meshes[k].colors[l * 12 + 4], &m3d->vertex[m3d->face[i].vertex[1]].color, 4);
-                if (m3d->vertex[m3d->face[i].vertex[2]].color & 0xFF000000)
-                    memcpy(&model.meshes[k].colors[l * 12 + 8], &m3d->vertex[m3d->face[i].vertex[2]].color, 4);
-            }
-
-            if (m3d->face[i].texcoord[0] != M3D_UNDEF)
-            {
-                model.meshes[k].texcoords[l * 6 + 0] = m3d->tmap[m3d->face[i].texcoord[0]].u;
-                model.meshes[k].texcoords[l * 6 + 1] = 1.0 - m3d->tmap[m3d->face[i].texcoord[0]].v;
-                model.meshes[k].texcoords[l * 6 + 2] = m3d->tmap[m3d->face[i].texcoord[1]].u;
-                model.meshes[k].texcoords[l * 6 + 3] = 1.0 - m3d->tmap[m3d->face[i].texcoord[1]].v;
-                model.meshes[k].texcoords[l * 6 + 4] = m3d->tmap[m3d->face[i].texcoord[2]].u;
-                model.meshes[k].texcoords[l * 6 + 5] = 1.0 - m3d->tmap[m3d->face[i].texcoord[2]].v;
-            }
-
-            if (m3d->face[i].normal[0] != M3D_UNDEF)
-            {
-                model.meshes[k].normals[l * 9 + 0] = m3d->vertex[m3d->face[i].normal[0]].x;
-                model.meshes[k].normals[l * 9 + 1] = m3d->vertex[m3d->face[i].normal[0]].y;
-                model.meshes[k].normals[l * 9 + 2] = m3d->vertex[m3d->face[i].normal[0]].z;
-                model.meshes[k].normals[l * 9 + 3] = m3d->vertex[m3d->face[i].normal[1]].x;
-                model.meshes[k].normals[l * 9 + 4] = m3d->vertex[m3d->face[i].normal[1]].y;
-                model.meshes[k].normals[l * 9 + 5] = m3d->vertex[m3d->face[i].normal[1]].z;
-                model.meshes[k].normals[l * 9 + 6] = m3d->vertex[m3d->face[i].normal[2]].x;
-                model.meshes[k].normals[l * 9 + 7] = m3d->vertex[m3d->face[i].normal[2]].y;
-                model.meshes[k].normals[l * 9 + 8] = m3d->vertex[m3d->face[i].normal[2]].z;
-            }
-
-            // Add skin (vertex / bone weight pairs)
-            if (m3d->numbone && m3d->numskin)
-            {
-                for (n = 0; n < 3; n++)
-                {
-                    int skinid = m3d->vertex[m3d->face[i].vertex[n]].skinid;
-
-                    // Check if there is a skin for this mesh, should be, just failsafe
-                    if (skinid != M3D_UNDEF && skinid < m3d->numskin)
-                    {
-                        for (j = 0; j < 4; j++)
-                        {
-                            model.meshes[k].boneIds[l*12 + n*4 + j] = m3d->skin[skinid].boneid[j];
-                            model.meshes[k].boneWeights[l*12 + n*4 + j] = m3d->skin[skinid].weight[j];
-                        }
-                    }
-                    else
-                    {
-                        // raylib does not handle boneless meshes with skeletal animations, so
-                        // we put all vertices without a bone into a special "no bone" bone
-                        model.meshes[k].boneIds[l * 12 + n * 4] = m3d->numbone;
-                        model.meshes[k].boneWeights[l * 12 + n * 4] = 1.0f;
-                    }
-                }
-            }
-        }
-
-        // Load materials
-        for (i = 0; i < m3d->nummaterial; i++)
-        {
-            model.materials[i + 1] = LoadMaterialDefault();
-
-            for (j = 0; j < m3d->material[i].numprop; j++)
-            {
-                prop = &m3d->material[i].prop[j];
-
-                switch (prop->type)
-                {
-                    case m3dp_Kd:
-                    {
-                        memcpy(&model.materials[i + 1].maps[MATERIAL_MAP_DIFFUSE].color, &prop->value.color, 4);
-                        model.materials[i + 1].maps[MATERIAL_MAP_DIFFUSE].value = 0.0f;
-                    } break;
-                    case m3dp_Ks:
-                    {
-                        memcpy(&model.materials[i + 1].maps[MATERIAL_MAP_SPECULAR].color, &prop->value.color, 4);
-                    } break;
-                    case m3dp_Ns:
-                    {
-                        model.materials[i + 1].maps[MATERIAL_MAP_SPECULAR].value = prop->value.fnum;
-                    } break;
-                    case m3dp_Ke:
-                    {
-                        memcpy(&model.materials[i + 1].maps[MATERIAL_MAP_EMISSION].color, &prop->value.color, 4);
-                        model.materials[i + 1].maps[MATERIAL_MAP_EMISSION].value = 0.0f;
-                    } break;
-                    case m3dp_Pm:
-                    {
-                        model.materials[i + 1].maps[MATERIAL_MAP_METALNESS].value = prop->value.fnum;
-                    } break;
-                    case m3dp_Pr:
-                    {
-                        model.materials[i + 1].maps[MATERIAL_MAP_ROUGHNESS].value = prop->value.fnum;
-                    } break;
-                    case m3dp_Ps:
-                    {
-                        model.materials[i + 1].maps[MATERIAL_MAP_NORMAL].color = WHITE;
-                        model.materials[i + 1].maps[MATERIAL_MAP_NORMAL].value = prop->value.fnum;
-                    } break;
-                    default:
-                    {
-                        if (prop->type >= 128)
-                        {
-                            Image image = { 0 };
-                            image.data = m3d->texture[prop->value.textureid].d;
-                            image.width = m3d->texture[prop->value.textureid].w;
-                            image.height = m3d->texture[prop->value.textureid].h;
-                            image.mipmaps = 1;
-                            image.format = (m3d->texture[prop->value.textureid].f == 4)? PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 :
-                                           ((m3d->texture[prop->value.textureid].f == 3)? PIXELFORMAT_UNCOMPRESSED_R8G8B8 :
-                                           ((m3d->texture[prop->value.textureid].f == 2)? PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA : PIXELFORMAT_UNCOMPRESSED_GRAYSCALE));
-
-                            switch (prop->type)
-                            {
-                                case m3dp_map_Kd: model.materials[i + 1].maps[MATERIAL_MAP_DIFFUSE].texture = LoadTextureFromImage(image); break;
-                                case m3dp_map_Ks: model.materials[i + 1].maps[MATERIAL_MAP_SPECULAR].texture = LoadTextureFromImage(image); break;
-                                case m3dp_map_Ke: model.materials[i + 1].maps[MATERIAL_MAP_EMISSION].texture = LoadTextureFromImage(image); break;
-                                case m3dp_map_Km: model.materials[i + 1].maps[MATERIAL_MAP_NORMAL].texture = LoadTextureFromImage(image); break;
-                                case m3dp_map_Ka: model.materials[i + 1].maps[MATERIAL_MAP_OCCLUSION].texture = LoadTextureFromImage(image); break;
-                                case m3dp_map_Pm: model.materials[i + 1].maps[MATERIAL_MAP_ROUGHNESS].texture = LoadTextureFromImage(image); break;
-                                default: break;
-                            }
-                        }
-                    } break;
-                }
-            }
-        }
-
-        // Load bones
-        if (m3d->numbone)
-        {
-            model.boneCount = m3d->numbone + 1;
-            model.bones = RL_CALLOC(model.boneCount, sizeof(BoneInfo));
-            model.bindPose = RL_CALLOC(model.boneCount, sizeof(Transform));
-
-            for (i = 0; i < m3d->numbone; i++)
-            {
-                model.bones[i].parent = m3d->bone[i].parent;
-                strncpy(model.bones[i].name, m3d->bone[i].name, sizeof(model.bones[i].name));
-                model.bindPose[i].translation.x = m3d->vertex[m3d->bone[i].pos].x*m3d->scale;
-                model.bindPose[i].translation.y = m3d->vertex[m3d->bone[i].pos].y*m3d->scale;
-                model.bindPose[i].translation.z = m3d->vertex[m3d->bone[i].pos].z*m3d->scale;
-                model.bindPose[i].rotation.x = m3d->vertex[m3d->bone[i].ori].x;
-                model.bindPose[i].rotation.y = m3d->vertex[m3d->bone[i].ori].y;
-                model.bindPose[i].rotation.z = m3d->vertex[m3d->bone[i].ori].z;
-                model.bindPose[i].rotation.w = m3d->vertex[m3d->bone[i].ori].w;
-                // TODO: if the orientation quaternion not normalized, then that's encoding scaling
-                model.bindPose[i].rotation = QuaternionNormalize(model.bindPose[i].rotation);
-                model.bindPose[i].scale.x = model.bindPose[i].scale.y = model.bindPose[i].scale.z = 1.0f;
-
-                // Child bones are stored in parent bone relative space, convert that into model space
-                if (model.bones[i].parent >= 0)
-                {
-                    model.bindPose[i].rotation = QuaternionMultiply(model.bindPose[model.bones[i].parent].rotation, model.bindPose[i].rotation);
-                    model.bindPose[i].translation = Vector3RotateByQuaternion(model.bindPose[i].translation, model.bindPose[model.bones[i].parent].rotation);
-                    model.bindPose[i].translation = Vector3Add(model.bindPose[i].translation, model.bindPose[model.bones[i].parent].translation);
-                    model.bindPose[i].scale = Vector3Multiply(model.bindPose[i].scale, model.bindPose[model.bones[i].parent].scale);
-                }
-            }
-
-            // Add a special "no bone" bone
-            model.bones[i].parent = -1;
-            strcpy(model.bones[i].name, "NO BONE");
-            model.bindPose[i].translation.x = 0.0f;
-            model.bindPose[i].translation.y = 0.0f;
-            model.bindPose[i].translation.z = 0.0f;
-            model.bindPose[i].rotation.x = 0.0f;
-            model.bindPose[i].rotation.y = 0.0f;
-            model.bindPose[i].rotation.z = 0.0f;
-            model.bindPose[i].rotation.w = 1.0f;
-            model.bindPose[i].scale.x = model.bindPose[i].scale.y = model.bindPose[i].scale.z = 1.0f;
-        }
-
-        // Load bone-pose default mesh into animation vertices. These will be updated when UpdateModelAnimation gets
-        // called, but not before, however DrawMesh uses these if they exists (so not good if they are left empty).
-        if (m3d->numbone && m3d->numskin)
-        {
-            for(i = 0; i < model.meshCount; i++)
-            {
-                memcpy(model.meshes[i].animVertices, model.meshes[i].vertices, model.meshes[i].vertexCount*3*sizeof(float));
-                memcpy(model.meshes[i].animNormals, model.meshes[i].normals, model.meshes[i].vertexCount*3*sizeof(float));
-            }
-        }
-
-        m3d_free(m3d);
-        UnloadFileData(fileData);
-    }
-
-    return model;
-}
-
-// Load M3D animation data
-#define M3D_ANIMDELAY 17    // that's roughly ~1000 msec / 60 FPS (16.666666* msec)
-static ModelAnimation *LoadModelAnimationsM3D(const char *fileName, unsigned int *animCount)
-{
-    m3d_t *m3d = NULL;
-    unsigned int bytesRead = 0;
-    unsigned char *fileData = LoadFileData(fileName, &bytesRead);
-    ModelAnimation *animations = NULL;
-    int i, j;
-
-    *animCount = 0;
-
-    if (fileData != NULL)
-    {
-        m3d = m3d_load(fileData, m3d_loaderhook, m3d_freehook, NULL);
-
-        if (!m3d || M3D_ERR_ISFATAL(m3d->errcode))
-        {
-            TRACELOG(LOG_WARNING, "MODEL: [%s] Failed to load M3D data, error code %d", fileName, m3d ? m3d->errcode : -2);
-            UnloadFileData(fileData);
-            return NULL;
-        }
-        else TRACELOG(LOG_INFO, "MODEL: [%s] M3D data loaded successfully: %i animations, %i bones, %i skins", fileName,
-            m3d->numaction, m3d->numbone, m3d->numskin);
-
-        // no animation or bone+skin?
-        if (!m3d->numaction || !m3d->numbone || !m3d->numskin)
-        {
-            m3d_free(m3d);
-            UnloadFileData(fileData);
-            return NULL;
-        }
-
-        animations = RL_MALLOC(m3d->numaction*sizeof(ModelAnimation));
-        *animCount = m3d->numaction;
-
-        for (unsigned int a = 0; a < m3d->numaction; a++)
-        {
-            animations[a].frameCount = m3d->action[a].durationmsec / M3D_ANIMDELAY;
-            animations[a].boneCount = m3d->numbone + 1;
-            animations[a].bones = RL_MALLOC((m3d->numbone + 1)*sizeof(BoneInfo));
-            animations[a].framePoses = RL_MALLOC(animations[a].frameCount*sizeof(Transform *));
-            // strncpy(animations[a].name, m3d->action[a].name, sizeof(animations[a].name));
-            TRACELOG(LOG_INFO, "MODEL: [%s] animation #%i: %i msec, %i frames", fileName, a, m3d->action[a].durationmsec, animations[a].frameCount);
-
-            for (i = 0; i < m3d->numbone; i++)
-            {
-                animations[a].bones[i].parent = m3d->bone[i].parent;
-                strncpy(animations[a].bones[i].name, m3d->bone[i].name, sizeof(animations[a].bones[i].name));
-            }
-
-            // A special, never transformed "no bone" bone, used for boneless vertices
-            animations[a].bones[i].parent = -1;
-            strcpy(animations[a].bones[i].name, "NO BONE");
-
-            // M3D stores frames at arbitrary intervals with sparse skeletons. We need full skeletons at
-            // regular intervals, so let the M3D SDK do the heavy lifting and calculate interpolated bones
-            for (i = 0; i < animations[a].frameCount; i++)
-            {
-                animations[a].framePoses[i] = RL_MALLOC((m3d->numbone + 1)*sizeof(Transform));
-
-                m3db_t *pose = m3d_pose(m3d, a, i * M3D_ANIMDELAY);
-                if (pose != NULL)
-                {
-                    for (j = 0; j < m3d->numbone; j++)
-                    {
-                        animations[a].framePoses[i][j].translation.x = m3d->vertex[pose[j].pos].x*m3d->scale;
-                        animations[a].framePoses[i][j].translation.y = m3d->vertex[pose[j].pos].y*m3d->scale;
-                        animations[a].framePoses[i][j].translation.z = m3d->vertex[pose[j].pos].z*m3d->scale;
-                        animations[a].framePoses[i][j].rotation.x = m3d->vertex[pose[j].ori].x;
-                        animations[a].framePoses[i][j].rotation.y = m3d->vertex[pose[j].ori].y;
-                        animations[a].framePoses[i][j].rotation.z = m3d->vertex[pose[j].ori].z;
-                        animations[a].framePoses[i][j].rotation.w = m3d->vertex[pose[j].ori].w;
-                        animations[a].framePoses[i][j].rotation = QuaternionNormalize(animations[a].framePoses[i][j].rotation);
-                        animations[a].framePoses[i][j].scale.x = animations[a].framePoses[i][j].scale.y = animations[a].framePoses[i][j].scale.z = 1.0f;
-
-                        // Child bones are stored in parent bone relative space, convert that into model space
-                        if (animations[a].bones[j].parent >= 0)
-                        {
-                            animations[a].framePoses[i][j].rotation = QuaternionMultiply(animations[a].framePoses[i][animations[a].bones[j].parent].rotation, animations[a].framePoses[i][j].rotation);
-                            animations[a].framePoses[i][j].translation = Vector3RotateByQuaternion(animations[a].framePoses[i][j].translation, animations[a].framePoses[i][animations[a].bones[j].parent].rotation);
-                            animations[a].framePoses[i][j].translation = Vector3Add(animations[a].framePoses[i][j].translation, animations[a].framePoses[i][animations[a].bones[j].parent].translation);
-                            animations[a].framePoses[i][j].scale = Vector3Multiply(animations[a].framePoses[i][j].scale, animations[a].framePoses[i][animations[a].bones[j].parent].scale);
-                        }
-                    }
-
-                    // Default transform for the "no bone" bone
-                    animations[a].framePoses[i][j].translation.x = 0.0f;
-                    animations[a].framePoses[i][j].translation.y = 0.0f;
-                    animations[a].framePoses[i][j].translation.z = 0.0f;
-                    animations[a].framePoses[i][j].rotation.x = 0.0f;
-                    animations[a].framePoses[i][j].rotation.y = 0.0f;
-                    animations[a].framePoses[i][j].rotation.z = 0.0f;
-                    animations[a].framePoses[i][j].rotation.w = 1.0f;
-                    animations[a].framePoses[i][j].scale.x = animations[a].framePoses[i][j].scale.y = animations[a].framePoses[i][j].scale.z = 1.0f;
-                    RL_FREE(pose);
-                }
-            }
-        }
-
-        m3d_free(m3d);
-        UnloadFileData(fileData);
-    }
-
-    return animations;
-}
-#endif
-
-#endif      // SUPPORT_MODULE_RMODELS

@@ -79,6 +79,9 @@ DerivedData/
 .idea/
 cmake-build-*/
 
+# VSC
+.vscode
+
 # CMake stuff
 CMakeCache.txt
 CMakeFiles
@@ -101,6 +104,3 @@ zig-out/
 build/
 build-*/
 docgen_tmp/
-
-# Parser stuff
-parser/raylib_parser

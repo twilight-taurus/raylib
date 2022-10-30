@@ -1176,6 +1176,8 @@ static int parseLine(Command *command, const char *p, unsigned int p_len,
 
   /* object name */
   if (token[0] == 'o' && IS_SPACE((token[1]))) {
+//    TRACELOG(LOG_INFO, "TINYOBJ: Processing command o.");
+
     /* @todo { multiple object name? } */
     token += 2;
 
@@ -1227,7 +1229,7 @@ int tinyobj_parse_obj(tinyobj_attrib_t *attrib, tinyobj_shape_t **shapes,
   unsigned int num_materials = 0;
 
   hash_table_t material_table;
-
+  // if pointers are NULL/invalid, not zero values!
   if (len < 1) return TINYOBJ_ERROR_INVALID_PARAMETER;
   if (attrib == NULL) return TINYOBJ_ERROR_INVALID_PARAMETER;
   if (shapes == NULL) return TINYOBJ_ERROR_INVALID_PARAMETER;
@@ -1237,6 +1239,8 @@ int tinyobj_parse_obj(tinyobj_attrib_t *attrib, tinyobj_shape_t **shapes,
   if (num_materials_out == NULL) return TINYOBJ_ERROR_INVALID_PARAMETER;
 
   tinyobj_attrib_init(attrib);
+
+  TRACELOG(LOG_INFO, "TINYOBJ: Initialized attribs.");
    /* 1. Find '\n' and create line data. */
   {
     unsigned int i;
@@ -1283,12 +1287,17 @@ int tinyobj_parse_obj(tinyobj_attrib_t *attrib, tinyobj_shape_t **shapes,
 
   create_hash_table(HASH_TABLE_DEFAULT_SIZE, &material_table);
 
+  TRACELOG(LOG_INFO, "TINYOBJ: Created line data.");
+
   /* 2. parse each line */
   {
     unsigned int i = 0;
     for (i = 0; i < num_lines; i++) {
       int ret = parseLine(&commands[i], &buf[line_infos[i].pos],
                           line_infos[i].len, flags & TINYOBJ_FLAG_TRIANGULATE);
+
+      TRACELOG(LOG_INFO, "TINYOBJ: Parsed line: %i", i);
+
       if (ret) {
         if (commands[i].type == COMMAND_V) {
           num_v++;
@@ -1307,6 +1316,8 @@ int tinyobj_parse_obj(tinyobj_attrib_t *attrib, tinyobj_shape_t **shapes,
       }
     }
   }
+
+  TRACELOG(LOG_INFO, "TINYOBJ: Lines parsed.");
 
   /* line_infos are not used anymore. Release memory. */
   if (line_infos) {
@@ -1329,6 +1340,9 @@ int tinyobj_parse_obj(tinyobj_attrib_t *attrib, tinyobj_shape_t **shapes,
     TINYOBJ_FREE(filename);
 
   }
+
+   TRACELOG(LOG_INFO, "TINYOBJ: Material loaded (if exists).");
+
 
   /* Construct attributes */
 
@@ -1373,6 +1387,8 @@ int tinyobj_parse_obj(tinyobj_attrib_t *attrib, tinyobj_shape_t **shapes,
         }
         }
         */
+
+
         if (commands[i].material_name &&
            commands[i].material_name_len >0) 
         {
@@ -1424,6 +1440,8 @@ int tinyobj_parse_obj(tinyobj_attrib_t *attrib, tinyobj_shape_t **shapes,
       }
     }
   }
+
+  TRACELOG(LOG_INFO, "TINYOBJ: Attributes constructed.");
 
   /* 5. Construct shape information. */
   {
@@ -1517,6 +1535,8 @@ int tinyobj_parse_obj(tinyobj_attrib_t *attrib, tinyobj_shape_t **shapes,
 
     (*num_shapes) = shape_idx;
   }
+
+  TRACELOG(LOG_INFO, "TINYOBJ: Shape information constructed.");
 
   if (commands) {
     TINYOBJ_FREE(commands);
