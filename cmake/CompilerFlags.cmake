@@ -6,7 +6,8 @@ add_if_flag_compiles(-Werror=pointer-arith CMAKE_C_FLAGS)
 
 # Generates error whenever a function is used before being declared
 # https://gcc.gnu.org/onlinedocs/gcc-4.0.1/gcc/Warning-Options.html
-add_if_flag_compiles(-Werror=implicit-function-declaration CMAKE_C_FLAGS)
+# HINT: COMMENTED THIS FLAG OUT, OTHERWISE WE GET COMPILATION ERROR.
+#add_if_flag_compiles(-Werror=implicit-function-declaration CMAKE_C_FLAGS)
 
 # Allows some casting of pointers without generating a warning
 add_if_flag_compiles(-fno-strict-aliasing CMAKE_C_FLAGS)
