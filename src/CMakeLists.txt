@@ -6,6 +6,8 @@ set(API_VERSION 400)
 include(GNUInstallDirs)
 include(JoinPaths)
 
+#set(CMAKE_BUILD_TYPE Release)
+
 # Sets build type if not set by now
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     if(RAYLIB_IS_MAIN)
@@ -99,6 +101,9 @@ target_include_directories(raylib
 
 # Copy the header files to the build directory for convenience
 file(COPY ${raylib_public_headers} DESTINATION "include")
+
+#Copy library output
+#file(COPY ${LIBRARY_OUTPUT_DIRECTORY}libraylib.a DESTINATION ${CMAKE_BINARY_DIR}/../lib)
 
 # Includes information on how the library will be installed on the system
 # when cmake --install is run

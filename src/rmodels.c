@@ -70,6 +70,12 @@
 
     #define CGLTF_IMPLEMENTATION
     #include "external/cgltf.h"         // glTF file format loading
+    // undefine macros made in cgltf.h for compatibility purposes.
+    #if defined(_WIN32)
+        #undef __int64
+        #define __int64 long long
+        #undef _ftelli64
+    #endif
 #endif
 
 #if defined(SUPPORT_FILEFORMAT_VOX)

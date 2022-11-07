@@ -947,8 +947,14 @@ static cgltf_result cgltf_default_file_read(const struct cgltf_memory_options* m
 	if (file_size == 0)
 	{
 		fseek(file, 0, SEEK_END);
-
+		
 #ifdef _WIN32
+	#ifdef __int64
+		#undef __int64
+	#endif
+	#define __int64 long
+	#define _ftelli64 ftell
+	
 		__int64 length = _ftelli64(file);
 #else
 		long length = ftell(file);
